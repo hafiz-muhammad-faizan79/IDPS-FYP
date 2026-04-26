@@ -15,20 +15,53 @@ FIX:
   2. Lets WebSocket upgrade requests pass through unconditionally
 """
 
-from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi                import FastAPI, Request
+from fastapi.responses      import Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
-from datetime import datetime, timedelta
+from starlette.types        import ASGIApp
+from datetime               import datetime, timedelta
 import random
 
 from routers.network        import router as network_router
 from routers.configuration  import router as config_router
 from routers.audits         import router as audits_router
 from routers.incidents      import router as incidents_router
+from routers.dashboard      import router as dashboard_router
+from routers.auth           import router as auth_router
+from routers                import threat_intel
 from network_monitor        import start_monitor
+from routers.reports        import router as reports_router
+from sqladmin               import Admin, ModelView
+from database               import engine
+from models.user            import User
+from models.incident        import Incident
+from models.audit           import AuditLog
+from models.network         import NetworkLog, BlockedIP
+from slowapi                import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors         import RateLimitExceeded
+from slowapi.util           import get_remote_address
+
 
 app = FastAPI(title="CyGuardian-X IDPS Backend", version="2.0.0")
+admin = Admin(app, engine)
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+class UserAdmin(ModelView, model=User):
+    column_list = [User.id, User.username, User.role, User.created_at]
+
+class IncidentAdmin(ModelView, model=Incident):
+    column_list = [Incident.id, Incident.severity, Incident.status, Incident.analyst, Incident.updated_at]
+
+class AuditAdmin(ModelView, model=AuditLog):
+    column_list = [AuditLog.id, AuditLog.actor, AuditLog.action, AuditLog.created_at]
+
+class NetworkLogAdmin(ModelView, model=NetworkLog):
+    column_list = [NetworkLog.id, NetworkLog.src_ip, NetworkLog.event, NetworkLog.result, NetworkLog.created_at]
+
+class BlockedIPAdmin(ModelView, model=BlockedIP):
+    column_list = [BlockedIP.id, BlockedIP.ip, BlockedIP.reason, BlockedIP.blocked_by, BlockedIP.created_at]
 
 # ══════════════════════════════════════════════════════════════
 # CUSTOM CORS + WEBSOCKET MIDDLEWARE
@@ -67,6 +100,17 @@ app.include_router(network_router)
 app.include_router(config_router)
 app.include_router(audits_router)
 app.include_router(incidents_router)
+app.include_router(dashboard_router)
+app.include_router(auth_router)
+app.include_router(reports_router)
+app.include_router(threat_intel.router)
+
+admin.add_view(UserAdmin)
+admin.add_view(IncidentAdmin)
+admin.add_view(AuditAdmin)
+admin.add_view(NetworkLogAdmin)
+admin.add_view(BlockedIPAdmin)
+
 
 # ── Start monitor engine on startup ────────────────────────────
 @app.on_event("startup")
@@ -87,80 +131,4 @@ def health():
     return {"status": "online", "timestamp": datetime.now().isoformat()}
 
 
-# ════════════════════════════════════════════════════════════════
-# DASHBOARD ENDPOINTS
-# ════════════════════════════════════════════════════════════════
-@app.get("/api/dashboard/stats")
-def dashboard_stats():
-    return {
-        "total_users":    {"value": 40,                          "trend": "up",   "change": "+12%", "sub": "Across all roles"    },
-        "active_attacks": {"value": random.randint(1, 6),        "trend": "down", "change": "-3%",  "sub": "Requires attention"  },
-        "network_flows":  {"value": random.randint(40000,55000), "trend": "up",   "change": "+12%", "sub": "Packets/sec live"    },
-        "detections":     {"value": 108844,                      "trend": "up",   "change": "+12%", "sub": "Last 24 hours total" },
-    }
-
-@app.get("/api/dashboard/detections")
-def detection_summary():
-    normal = 84721; suspicious = 17832; malicious = 6291
-    total  = normal + suspicious + malicious
-    return {
-        "total": total,
-        "categories": [
-            {"label": "Normal",     "value": normal,     "pct": round((normal/total)*100),     "color": "#00ff9f"},
-            {"label": "Suspicious", "value": suspicious, "pct": round((suspicious/total)*100), "color": "#ffbe0b"},
-            {"label": "Malicious",  "value": malicious,  "pct": round((malicious/total)*100),  "color": "#ff006e"},
-        ]
-    }
-
-@app.get("/api/dashboard/alert-trends")
-def alert_trends():
-    today = datetime.now()
-    days  = []
-    for i in range(6, -1, -1):
-        day = today - timedelta(days=i)
-        days.append({
-            "date":       day.strftime("%a"),
-            "full_date":  day.strftime("%Y-%m-%d"),
-            "anomaly":    random.randint(80,  300),
-            "signature":  random.randint(400, 900),
-            "ransomware": random.randint(10,  80),
-        })
-    return {"days": days}
-
-@app.get("/api/dashboard/users-by-role")
-def users_by_role():
-    return {
-        "total": 40,
-        "roles": [
-            {"role": "SOC Analyst",        "count": 18, "color": "#00d4ff", "pct": 45},
-            {"role": "Network Engineer",   "count": 10, "color": "#00ff9f", "pct": 25},
-            {"role": "Security Manager",   "count": 6,  "color": "#ffbe0b", "pct": 15},
-            {"role": "Incident Responder", "count": 4,  "color": "#f97316", "pct": 10},
-            {"role": "Admin",              "count": 2,  "color": "#a78bfa", "pct": 5  },
-        ]
-    }
-
-@app.get("/api/dashboard/recent-users")
-def recent_users():
-    return {
-        "recent": [
-            {"name": "Ahmad Raza",  "email": "ahmad.raza@soc.local",  "role": "SOC Analyst",      "status": "online",  "avatar": "AR", "last_active": "Just now"},
-            {"name": "Sara Malik",  "email": "sara.malik@soc.local",  "role": "Network Engineer", "status": "online",  "avatar": "SM", "last_active": "2m ago"  },
-            {"name": "Omar Sheikh", "email": "omar.sheikh@soc.local", "role": "Sec Manager",      "status": "away",    "avatar": "OS", "last_active": "15m ago" },
-            {"name": "Zara Khan",   "email": "zara.khan@soc.local",   "role": "IR Specialist",    "status": "online",  "avatar": "ZK", "last_active": "32m ago" },
-            {"name": "Bilal Ahmed", "email": "bilal.ahmed@soc.local", "role": "SOC Analyst",      "status": "offline", "avatar": "BA", "last_active": "1h ago"  },
-        ],
-        "last_created":     {"name": "Faiz Bugti", "email": "faiz.bugti@soc.local", "role": "Admin", "avatar": "FB", "time": "Today, 09:00"     },
-        "last_deactivated": {"name": "John Doe",   "email": "john.doe@soc.local",   "role": "Guest", "avatar": "JD", "time": "Yesterday, 17:30" },
-    }
-
-@app.get("/api/dashboard/quick-access")
-def quick_access():
-    c = random.randint(1, 5)
-    return {
-        "manage_users":           {"badge": "40 users",      "count": 40  },
-        "security_configuration": {"badge": "1,247 rules",   "count": 1247},
-        "network_monitoring":     {"badge": "32 sensors",    "count": 32  },
-        "alerts_incidents":       {"badge": f"{c} critical", "count": c   },
-        "audit_reports":          {"badge": "Updated today", "count": None},
-    }
+# Dashboard endpoints moved to routers/dashboard.py

@@ -19,9 +19,9 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 # ── Toggle this when you're ready for real capture ──────────────
-USE_REAL_CAPTURE = False          # False = simulated | True = real Scapy
+USE_REAL_CAPTURE = True          # False = simulated | True = real Scapy
 INTERFACE        = "wlp0s20f3"   # your WiFi interface
-MY_IP            = "192.168.1.107"
+MY_IP            = "172.20.10.2"
 # ────────────────────────────────────────────────────────────────
 
 if USE_REAL_CAPTURE:
@@ -36,6 +36,51 @@ else:
     SCAPY_AVAILABLE = False
 
 import psutil
+
+# ── Signature Rules Engine ─────────────────────────────────────
+try:
+    from signature_engine import match_packet, start_signature_engine
+    SIG_ENGINE_AVAILABLE = True
+except ImportError:
+    SIG_ENGINE_AVAILABLE = False
+    print("[WARN] Signature engine not available")
+import queue
+
+# ── Packet DB write queue (non-blocking) ──────────────────────
+_packet_queue = queue.Queue(maxsize=5000)
+
+def _db_writer():
+    """Background thread — drains packet queue into PostgreSQL."""
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from database import SessionLocal
+    from models.network import CapturedPacket
+
+    BATCH_SIZE = 50   # write in batches for efficiency
+    batch = []
+
+    while True:
+        try:
+            pkt_data = _packet_queue.get(timeout=2)
+            batch.append(pkt_data)
+            if len(batch) >= BATCH_SIZE:
+                _flush_batch(batch, SessionLocal, CapturedPacket)
+                batch = []
+        except queue.Empty:
+            if batch:
+                _flush_batch(batch, SessionLocal, CapturedPacket)
+                batch = []
+
+def _flush_batch(batch, SessionLocal, CapturedPacket):
+    db = SessionLocal()
+    try:
+        db.bulk_insert_mappings(CapturedPacket, batch)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[DB] Packet write error: {e}")
+    finally:
+        db.close()
 
 # ══════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -347,25 +392,87 @@ def _process_real_packet(pkt):
     if not pkt.haslayer("IP"):
         return
 
-    ip_layer  = pkt["IP"]
-    src       = ip_layer.src
-    dst       = ip_layer.dst
-    proto     = "TCP" if pkt.haslayer("TCP") else \
-                "UDP" if pkt.haslayer("UDP") else \
-                "ICMP" if pkt.haslayer("ICMP") else "OTHER"
-    length    = len(pkt)
+    ip_layer = pkt["IP"]
+    src      = ip_layer.src
+    dst      = ip_layer.dst
+    length   = len(pkt)
+
+    if pkt.haslayer("TCP"):
+        proto = "TCP"
+        port  = pkt["TCP"].dport
+    elif pkt.haslayer("UDP"):
+        proto = "UDP"
+        port  = pkt["UDP"].dport
+    elif pkt.haslayer("ICMP"):
+        proto = "ICMP"
+        port  = 0
+    else:
+        proto = "OTHER"
+        port  = 0
+
+    port_proto_map = {
+        80:"HTTP", 443:"HTTPS", 53:"DNS", 22:"SSH",
+        21:"FTP", 25:"SMTP", 3306:"MySQL", 5432:"PostgreSQL",
+        3389:"RDP", 8080:"HTTP-ALT", 8443:"HTTPS-ALT",
+    }
+    display_proto = port_proto_map.get(port, proto)
 
     with state.lock:
         state.total_packets += 1
         state._tick_packets += 1
         state._tick_bytes   += length
-        state.proto_counts[proto] += 1
+        state.proto_counts[display_proto] += 1
 
-    # Detect suspicious patterns
-    _detect_threats(pkt, src, dst, proto)
+    is_bad_ip         = src in KNOWN_BAD_IPS
+    is_sensitive_port = port in [22, 23, 3389, 5900, 1433, 3306, 5432]
+    status = "Blocked" if is_bad_ip else "Suspicious" if is_sensitive_port else "Established"
 
+    if random.random() < 0.15:
+        conn = {
+            "id":        int(time.time() * 1000) + random.randint(0, 999),
+            "srcIp":     src,
+            "dstIp":     dst,
+            "protocol":  display_proto,
+            "port":      port,
+            "status":    status,
+            "data":      f"{length} B",
+            "duration":  "0m 0s",
+            "flagged":   is_bad_ip or is_sensitive_port,
+            "timestamp": _fullts(),
+        }
+        state.add_connection(conn)
 
-def _detect_threats(pkt, src, dst, proto):
+    _detect_threats(pkt, src, dst, proto, port)
+
+    # ── Signature Rules Engine matching ───────────────────────
+    if SIG_ENGINE_AVAILABLE:
+        try:
+            payload = ""
+            if pkt.haslayer("Raw"):
+                try:
+                    payload = pkt["Raw"].load.decode("utf-8", errors="ignore")
+                except Exception:
+                    payload = ""
+            match_packet(src, dst, display_proto, port, payload, pkt)
+        except Exception as e:
+            pass  # never crash the capture thread
+
+    # Store every 10th packet in DB (non-blocking)
+    if random.random() < 0.1:
+        try:
+            _packet_queue.put_nowait({
+                "src_ip":   src,
+                "dst_ip":   dst,
+                "protocol": display_proto,
+                "port":     port,
+                "length":   length,
+                "status":   status,
+                "flagged":  is_bad_ip or is_sensitive_port,
+            })
+        except Exception:
+            pass  # queue full — drop packet
+
+def _detect_threats(pkt, src, dst, proto, port=0):
     """Basic real-time threat detection on captured packets."""
     # Known bad IPs
     if src in KNOWN_BAD_IPS:
@@ -414,7 +521,19 @@ def _real_stats_updater():
             # Real system stats
             state.cpu      = int(psutil.cpu_percent(interval=None))
             state.mem      = int(psutil.virtual_memory().percent)
-            state.latency  = random.randint(4, 30)
+            # Real latency via ping
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["ping", "-c", "1", "-W", "1", "8.8.8.8"],
+                    capture_output=True, text=True, timeout=2
+                )
+                for line in result.stdout.split("\n"):
+                    if "time=" in line:
+                        state.latency = int(float(line.split("time=")[1].split(" ")[0]))
+                        break
+            except:
+                state.latency = random.randint(4, 30)
 
             # Real active connections via psutil
             conns = psutil.net_connections(kind="inet")
@@ -444,6 +563,15 @@ def _real_engine():
 # ══════════════════════════════════════════════════════════════
 def start_monitor():
     """Launch the appropriate engine in a daemon thread."""
+    # Start DB writer thread
+    db_thread = threading.Thread(target=_db_writer, daemon=True)
+    db_thread.start()
+    print("[MONITOR] DB writer thread started")
+
+    # Start signature rules engine
+    if SIG_ENGINE_AVAILABLE:
+        start_signature_engine()
+
     if USE_REAL_CAPTURE and SCAPY_AVAILABLE:
         t = threading.Thread(target=_real_engine, daemon=True)
     else:

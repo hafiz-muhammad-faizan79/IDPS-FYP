@@ -1,322 +1,432 @@
-"""
-routers/configuration.py
-=========================
-All /api/configuration/* endpoints for the Configuration page.
+# idps-backend/routers/configuration.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import Optional
 
-Covers:
-  1. Signature-Based Detection  — global toggle + stats
-  2. Anomaly Detection Settings — thresholds, sensitivity, save
-  3. Active Attackers           — list, block, monitor, whitelist
-  4. Signature Database         — CRUD on sig rules
-  5. Ransomware Rules           — list, enable/disable
-  6. Change Log                 — full audit trail of config changes
-  7. Create Custom Rule         — POST new rule
-"""
+from database import get_db
+from models.configuration import (
+    SignatureRule, RansomwareRule, AnomalyConfig,
+    NetworkInterface, AlertSettings, SystemSettings,
+)
 
-from fastapi import APIRouter, HTTPException
-from typing import Optional, List
-from datetime import datetime
-import random
+from models.network import BlockedIP
+
+from schemas.configuration import (
+    SignatureRuleCreate, SignatureRuleUpdate, SignatureRuleOut,
+    RansomwareRuleCreate, RansomwareRuleUpdate, RansomwareRuleOut,
+    AnomalyConfigUpdate, AnomalyConfigOut,
+    NetworkInterfaceUpdate, NetworkInterfaceOut,
+    AlertSettingsUpdate, AlertSettingsOut,
+    SystemSettingsUpdate, SystemSettingsOut,
+)
 
 router = APIRouter(prefix="/api/configuration", tags=["Configuration"])
 
 # ══════════════════════════════════════════════════════════════
-# IN-MEMORY STATE  (persists while server is running)
-# In production replace with a database
+# HELPER — get-or-create single-row config tables
 # ══════════════════════════════════════════════════════════════
-
-# ── Signature detection global toggle ────────────────────────
-sig_detection_enabled = True
-
-# ── Anomaly settings ─────────────────────────────────────────
-anomaly_settings = {
-    "enabled":       True,
-    "sensitivity":   "High",
-    "packet_size":   1500,
-    "traffic_rate":  10000,
-    "baseline":      "24 hours",
-    "auto_block":    False,
-}
-
-# ── Signature rules ───────────────────────────────────────────
-sig_rules = [
-    {"id":"SIG-001","name":"SQL Union Attack",       "category":"SQL Injection","severity":"Critical","protocol":"HTTP", "action":"Block","status":"Active",  "lastTriggered":"2026-02-24 08:12","hits":1482},
-    {"id":"SIG-002","name":"XSS Script Injection",   "category":"XSS",         "severity":"High",    "protocol":"HTTP", "action":"Alert","status":"Active",  "lastTriggered":"2026-02-24 07:45","hits":834 },
-    {"id":"SIG-003","name":"SYN Flood Detection",    "category":"DDoS",        "severity":"Critical","protocol":"TCP",  "action":"Drop", "status":"Active",  "lastTriggered":"2026-02-24 09:01","hits":5621},
-    {"id":"SIG-004","name":"NMAP Port Scan",         "category":"Port Scan",   "severity":"Medium",  "protocol":"TCP",  "action":"Log",  "status":"Active",  "lastTriggered":"2026-02-23 22:10","hits":291 },
-    {"id":"SIG-005","name":"SSH Brute Force",        "category":"Brute Force", "severity":"High",    "protocol":"TCP",  "action":"Block","status":"Active",  "lastTriggered":"2026-02-24 06:33","hits":2103},
-    {"id":"SIG-006","name":"Mirai Botnet Signature", "category":"Malware",     "severity":"Critical","protocol":"TCP",  "action":"Block","status":"Active",  "lastTriggered":"2026-02-24 05:58","hits":447 },
-    {"id":"SIG-007","name":"ICMP Ping Sweep",        "category":"Port Scan",   "severity":"Low",     "protocol":"ICMP", "action":"Log",  "status":"Active",  "lastTriggered":"2026-02-23 18:20","hits":88  },
-    {"id":"SIG-008","name":"HTTP Slowloris",         "category":"DDoS",        "severity":"High",    "protocol":"HTTP", "action":"Drop", "status":"Inactive","lastTriggered":"2026-02-22 14:11","hits":129 },
-    {"id":"SIG-009","name":"Blind SQL Injection",    "category":"SQL Injection","severity":"High",   "protocol":"HTTPS","action":"Block","status":"Active",  "lastTriggered":"2026-02-24 07:02","hits":678 },
-    {"id":"SIG-010","name":"DOM-based XSS",          "category":"XSS",         "severity":"Medium",  "protocol":"HTTPS","action":"Alert","status":"Active",  "lastTriggered":"2026-02-23 20:44","hits":312 },
-    {"id":"SIG-011","name":"UDP Amplification",      "category":"DDoS",        "severity":"Critical","protocol":"UDP",  "action":"Drop", "status":"Active",  "lastTriggered":"2026-02-24 09:15","hits":3892},
-    {"id":"SIG-012","name":"FTP Brute Force",        "category":"Brute Force", "severity":"Medium",  "protocol":"TCP",  "action":"Alert","status":"Inactive","lastTriggered":"2026-02-21 11:30","hits":54  },
-    {"id":"SIG-013","name":"Emotet Malware Pattern", "category":"Malware",     "severity":"Critical","protocol":"HTTP", "action":"Block","status":"Active",  "lastTriggered":"2026-02-24 04:22","hits":198 },
-    {"id":"SIG-014","name":"RDP Scan Detection",     "category":"Port Scan",   "severity":"Medium",  "protocol":"TCP",  "action":"Log",  "status":"Active",  "lastTriggered":"2026-02-23 16:05","hits":441 },
-    {"id":"SIG-015","name":"Stored XSS Attack",      "category":"XSS",         "severity":"High",    "protocol":"HTTP", "action":"Block","status":"Active",  "lastTriggered":"2026-02-24 08:55","hits":267 },
-]
-
-# ── Active attackers ──────────────────────────────────────────
-attackers = [
-    {"ip":"185.220.101.47","country":"Russia",     "type":"DDoS",       "firstSeen":"2026-02-20 14:22","lastSeen":"2026-02-24 09:01","packets":482910,"status":"Active"    },
-    {"ip":"45.142.212.100","country":"China",      "type":"Port Scan",  "firstSeen":"2026-02-22 08:11","lastSeen":"2026-02-24 08:44","packets":12840, "status":"Monitoring"},
-    {"ip":"91.108.4.200",  "country":"Ukraine",    "type":"Brute Force","firstSeen":"2026-02-19 22:30","lastSeen":"2026-02-24 07:55","packets":28401, "status":"Blocked"   },
-    {"ip":"103.75.190.12", "country":"Netherlands","type":"SQL Inject", "firstSeen":"2026-02-23 10:00","lastSeen":"2026-02-24 09:10","packets":7823,  "status":"Active"    },
-    {"ip":"194.165.16.78", "country":"Iran",       "type":"DDoS",       "firstSeen":"2026-02-21 03:15","lastSeen":"2026-02-24 08:30","packets":921034,"status":"Blocked"   },
-    {"ip":"77.83.246.90",  "country":"Germany",    "type":"Malware",    "firstSeen":"2026-02-24 01:44","lastSeen":"2026-02-24 09:05","packets":4211,  "status":"Active"    },
-    {"ip":"5.188.206.14",  "country":"Luxembourg", "type":"Ransomware", "firstSeen":"2026-02-23 18:20","lastSeen":"2026-02-24 08:59","packets":33120, "status":"Monitoring"},
-    {"ip":"162.247.74.200","country":"USA",        "type":"Tor Exit",   "firstSeen":"2026-02-22 12:00","lastSeen":"2026-02-23 23:00","packets":5612,  "status":"Blocked"   },
-]
-
-# ── Ransomware rules ──────────────────────────────────────────
-ransom_rules = [
-    {"id":1, "name":"AES Pattern Detection",          "type":"Encryption",  "risk":"Critical","status":"Active",  "lastTriggered":"2026-02-24 08:45","pattern":"AES-256 entropy >7.9 in outbound stream"        },
-    {"id":2, "name":"Burst of Encrypted Temp Files",  "type":"File System", "risk":"Critical","status":"Active",  "lastTriggered":"2026-02-24 07:12","pattern":">500 .tmp files encrypted/min in %TEMP%"         },
-    {"id":3, "name":"ChaCha20 Anomaly on NAS",        "type":"Network",     "risk":"High",    "status":"Active",  "lastTriggered":"2026-02-23 22:30","pattern":"ChaCha20 stream cipher on NAS port 445"          },
-    {"id":4, "name":"Experimental Disabled Indicator","type":"Experimental","risk":"Medium",  "status":"Disabled","lastTriggered":"2026-02-20 14:00","pattern":"EXPERIMENTAL: unknown cipher header"             },
-    {"id":5, "name":"Legacy Disabled Ransomware Rule","type":"Experimental","risk":"Medium",  "status":"Disabled","lastTriggered":"2026-02-15 09:00","pattern":"Legacy WannaCry SMB exploit pattern"            },
-    {"id":6, "name":"LockBit Network Pattern",        "type":"Network",     "risk":"Critical","status":"Active",  "lastTriggered":"2026-02-24 09:00","pattern":"LockBit C2 beacon on port 1234/8443"             },
-    {"id":7, "name":"Mass Read of Home Directories",  "type":"File System", "risk":"High",    "status":"Active",  "lastTriggered":"2026-02-24 06:55","pattern":">1000 reads/sec on /home/* or C:\\Users\\"      },
-    {"id":8, "name":"Ryuk Style Registry Changes",    "type":"Registry",    "risk":"Critical","status":"Active",  "lastTriggered":"2026-02-24 08:01","pattern":"HKLM\\SOFTWARE\\Microsoft\\Windows NT deletion"  },
-    {"id":9, "name":"Shadow Copy Deletion Spike",     "type":"File System", "risk":"Critical","status":"Active",  "lastTriggered":"2026-02-24 07:30","pattern":"vssadmin delete shadows /all /quiet"             },
-    {"id":10,"name":"Wide Access to Project Archives","type":"File System", "risk":"High",    "status":"Active",  "lastTriggered":"2026-02-23 19:45","pattern":">200 .zip/.tar reads across project dirs"        },
-]
-
-# ── Change log ────────────────────────────────────────────────
-change_log = [
-    {"id":"LOG-012","timestamp":"2026-02-24 09:10","by":"admin",   "section":"Signature",  "action":"Modified","rule":"SIG-003 SYN Flood",        "prev":"Alert",  "next":"Drop",    "status":"Applied"    },
-    {"id":"LOG-011","timestamp":"2026-02-24 08:55","by":"admin",   "section":"Ransomware", "action":"Enabled", "rule":"LockBit Network Pattern",  "prev":"Disabled","next":"Active", "status":"Applied"    },
-    {"id":"LOG-010","timestamp":"2026-02-24 08:30","by":"soc_lead","section":"Anomaly",    "action":"Modified","rule":"Sensitivity Level",         "prev":"Medium", "next":"High",    "status":"Applied"    },
-    {"id":"LOG-009","timestamp":"2026-02-24 07:45","by":"admin",   "section":"Custom Rule","action":"Created", "rule":"Custom-SSH-Geo-Block",     "prev":"—",      "next":"Active",  "status":"Applied"    },
-    {"id":"LOG-008","timestamp":"2026-02-24 07:12","by":"analyst1","section":"Signature",  "action":"Disabled","rule":"SIG-008 HTTP Slowloris",   "prev":"Active", "next":"Inactive","status":"Applied"    },
-    {"id":"LOG-007","timestamp":"2026-02-24 06:00","by":"admin",   "section":"Ransomware", "action":"Modified","rule":"AES Pattern Detection",    "prev":"High",   "next":"Critical","status":"Applied"    },
-    {"id":"LOG-006","timestamp":"2026-02-23 22:15","by":"soc_lead","section":"Anomaly",    "action":"Modified","rule":"Packet Size Threshold",    "prev":"1200",   "next":"1500",    "status":"Applied"    },
-    {"id":"LOG-005","timestamp":"2026-02-23 18:00","by":"admin",   "section":"Signature",  "action":"Created", "rule":"SIG-015 Stored XSS",      "prev":"—",      "next":"Active",  "status":"Applied"    },
-    {"id":"LOG-004","timestamp":"2026-02-23 14:30","by":"analyst2","section":"Ransomware", "action":"Disabled","rule":"Legacy Disabled Rule",     "prev":"Active", "next":"Disabled","status":"Applied"    },
-    {"id":"LOG-003","timestamp":"2026-02-23 10:00","by":"admin",   "section":"Signature",  "action":"Deleted", "rule":"SIG-OLD-001 Obsolete Rule","prev":"Inactive","next":"—",      "status":"Applied"    },
-    {"id":"LOG-002","timestamp":"2026-02-22 16:45","by":"soc_lead","section":"Anomaly",    "action":"Modified","rule":"Traffic Rate Threshold",   "prev":"5000",   "next":"10000",   "status":"Rolled Back"},
-    {"id":"LOG-001","timestamp":"2026-02-22 09:00","by":"admin",   "section":"Custom Rule","action":"Created", "rule":"Custom-DDoS-Rate-Limit",  "prev":"—",      "next":"Active",  "status":"Pending"    },
-]
-
-# ── Helpers ───────────────────────────────────────────────────
-def _now():
-    return datetime.now().strftime("%Y-%m-%d %H:%M")
-
-def _next_log_id():
-    nums = [int(l["id"].split("-")[1]) for l in change_log if l["id"].startswith("LOG-")]
-    return f"LOG-{(max(nums)+1):03d}" if nums else "LOG-001"
-
-def _add_log(by: str, section: str, action: str, rule: str, prev: str, nxt: str):
-    entry = {
-        "id":        _next_log_id(),
-        "timestamp": _now(),
-        "by":        by,
-        "section":   section,
-        "action":    action,
-        "rule":      rule,
-        "prev":      prev,
-        "next":      nxt,
-        "status":    "Applied",
-    }
-    change_log.insert(0, entry)
-    return entry
+def _get_or_create_singleton(db: Session, Model, default_id: int = 1):
+    obj = db.query(Model).filter(Model.id == default_id).first()
+    if not obj:
+        obj = Model(id=default_id)
+        db.add(obj)
+        db.commit()
+        db.refresh(obj)
+    return obj
 
 
 # ══════════════════════════════════════════════════════════════
-# SECTION 1 — SIGNATURE DETECTION GLOBAL
+# 1. SIGNATURE RULES
 # ══════════════════════════════════════════════════════════════
-
-@router.get("/signature/status")
-def get_signature_status():
-    active = sum(1 for r in sig_rules if r["status"] == "Active")
-    return {
-        "enabled":    sig_detection_enabled,
-        "total":      len(sig_rules),
-        "active":     active,
-        "inactive":   len(sig_rules) - active,
-        "last_updated": _now(),
-        "hit_rate":   "94.2%",
-    }
-
-@router.post("/signature/toggle")
-def toggle_signature(payload: dict):
-    global sig_detection_enabled
-    sig_detection_enabled = payload.get("enabled", not sig_detection_enabled)
-    _add_log("admin","Signature","Modified","Global Signature Detection",
-             "Inactive" if sig_detection_enabled else "Active",
-             "Active" if sig_detection_enabled else "Inactive")
-    return {"success": True, "enabled": sig_detection_enabled}
-
-
-# ══════════════════════════════════════════════════════════════
-# SECTION 2 — ANOMALY DETECTION SETTINGS
-# ══════════════════════════════════════════════════════════════
-
-@router.get("/anomaly/settings")
-def get_anomaly_settings():
-    return anomaly_settings
-
-@router.post("/anomaly/settings")
-def save_anomaly_settings(payload: dict):
-    old = dict(anomaly_settings)
-    anomaly_settings.update({
-        k: v for k, v in payload.items() if k in anomaly_settings
-    })
-    # Log each changed field
-    for key in ["sensitivity","packet_size","traffic_rate","baseline","auto_block","enabled"]:
-        if key in payload and str(payload[key]) != str(old.get(key)):
-            _add_log("admin","Anomaly","Modified", key.replace("_"," ").title(),
-                     str(old.get(key,"")), str(payload[key]))
-    return {"success": True, "settings": anomaly_settings}
-
-
-# ══════════════════════════════════════════════════════════════
-# SECTION 3 — ACTIVE ATTACKERS
-# ══════════════════════════════════════════════════════════════
-
-@router.get("/attackers")
-def get_attackers(search: Optional[str] = None):
-    result = attackers
-    if search:
-        result = [a for a in attackers
-                  if search in a["ip"] or search.lower() in a["type"].lower()]
-    return {"total": len(result), "attackers": result}
-
-@router.post("/attackers/action")
-def attacker_action(payload: dict):
-    ip     = payload.get("ip","")
-    action = payload.get("action","")   # "Block" | "Monitor" | "Whitelist"
-    if not ip or action not in ("Block","Monitor","Whitelist"):
-        raise HTTPException(400, "Invalid ip or action")
-    status_map = {"Block":"Blocked","Monitor":"Monitoring","Whitelist":"Active"}
-    for a in attackers:
-        if a["ip"] == ip:
-            old_status = a["status"]
-            a["status"] = status_map[action]
-            a["lastSeen"] = _now()
-            _add_log("admin","Attacker",action,f"IP {ip}",old_status,a["status"])
-            return {"success":True,"message":f"{action} applied to {ip}","attacker":a}
-    raise HTTPException(404, f"IP {ip} not found")
-
-
-# ══════════════════════════════════════════════════════════════
-# SECTION 4 — SIGNATURE DATABASE
-# ══════════════════════════════════════════════════════════════
-
-@router.get("/signatures")
-def get_signatures(
-    search:   Optional[str] = None,
-    severity: Optional[str] = None,
-    action:   Optional[str] = None,
-    status:   Optional[str] = None,
-    category: Optional[str] = None,
+@router.get("/signatures", response_model=list[SignatureRuleOut])
+def list_signatures(
+    enabled:  Optional[bool] = None,
+    severity: Optional[str]  = None,
+    search:   Optional[str]  = None,
+    db: Session = Depends(get_db),
 ):
-    result = sig_rules
-    if search:   result = [r for r in result if search.lower() in r["name"].lower() or search in r["id"]]
-    if severity and severity != "All": result = [r for r in result if r["severity"] == severity]
-    if action   and action   != "All": result = [r for r in result if r["action"]   == action  ]
-    if status   and status   != "All": result = [r for r in result if r["status"]   == status  ]
-    if category and category != "All": result = [r for r in result if r["category"] == category]
-    return {"total": len(result), "rules": result}
+    q = db.query(SignatureRule)
+    if enabled  is not None:     q = q.filter(SignatureRule.enabled  == enabled)
+    if severity and severity != "All": q = q.filter(SignatureRule.severity == severity)
+    if search:
+        q = q.filter(
+            SignatureRule.name.ilike(f"%{search}%") |
+            SignatureRule.id.ilike(f"%{search}%")   |
+            SignatureRule.pattern.ilike(f"%{search}%")
+        )
+    return q.order_by(SignatureRule.id).all()
 
-@router.post("/signatures/{rule_id}/toggle")
-def toggle_signature_rule(rule_id: str):
-    for r in sig_rules:
-        if r["id"] == rule_id:
-            old = r["status"]
-            r["status"] = "Inactive" if r["status"] == "Active" else "Active"
-            _add_log("admin","Signature",
-                     "Enabled" if r["status"]=="Active" else "Disabled",
-                     f"{r['id']} {r['name']}", old, r["status"])
-            return {"success":True,"rule":r}
-    raise HTTPException(404, f"Rule {rule_id} not found")
 
-@router.delete("/signatures/{rule_id}")
-def delete_signature_rule(rule_id: str):
-    global sig_rules
-    rule = next((r for r in sig_rules if r["id"]==rule_id), None)
+@router.post("/signatures", response_model=SignatureRuleOut, status_code=201)
+def create_signature(body: SignatureRuleCreate, db: Session = Depends(get_db)):
+    if db.query(SignatureRule).filter(SignatureRule.id == body.id).first():
+        raise HTTPException(400, f"Rule {body.id} already exists")
+    rule = SignatureRule(**body.model_dump())
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.patch("/signatures/{rule_id}", response_model=SignatureRuleOut)
+def update_signature(rule_id: str, body: SignatureRuleUpdate, db: Session = Depends(get_db)):
+    rule = db.query(SignatureRule).filter(SignatureRule.id == rule_id).first()
     if not rule:
         raise HTTPException(404, f"Rule {rule_id} not found")
-    sig_rules = [r for r in sig_rules if r["id"] != rule_id]
-    _add_log("admin","Signature","Deleted",
-             f"{rule['id']} {rule['name']}","Active","—")
-    return {"success":True,"deleted":rule_id}
+    for field, val in body.model_dump(exclude_none=True).items():
+        setattr(rule, field, val)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.delete("/signatures/{rule_id}")
+def delete_signature(rule_id: str, db: Session = Depends(get_db)):
+    rule = db.query(SignatureRule).filter(SignatureRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, f"Rule {rule_id} not found")
+    db.delete(rule)
+    db.commit()
+    return {"success": True, "deleted": rule_id}
+
+
+@router.post("/signatures/{rule_id}/toggle", response_model=SignatureRuleOut)
+def toggle_signature(rule_id: str, db: Session = Depends(get_db)):
+    rule = db.query(SignatureRule).filter(SignatureRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, f"Rule {rule_id} not found")
+    rule.enabled = not rule.enabled
+    db.commit()
+    db.refresh(rule)
+    # Hot-reload engine
+    try:
+        from signature_engine import reload_rules
+        reload_rules()
+    except Exception:
+        pass
+    return rule
 
 
 # ══════════════════════════════════════════════════════════════
-# SECTION 5 — CREATE CUSTOM RULE
+# 2. RANSOMWARE RULES
 # ══════════════════════════════════════════════════════════════
-
-@router.post("/signatures/create")
-def create_rule(payload: dict):
-    required = ["name","category","severity","protocol","action"]
-    for f in required:
-        if not payload.get(f):
-            raise HTTPException(400, f"Missing field: {f}")
-    # Generate next SIG id
-    existing_ids = [int(r["id"].split("-")[1]) for r in sig_rules if r["id"].startswith("SIG-")]
-    next_id = f"SIG-{(max(existing_ids)+1):03d}" if existing_ids else "SIG-001"
-    new_rule = {
-        "id":            next_id,
-        "name":          payload["name"],
-        "category":      payload["category"],
-        "severity":      payload["severity"],
-        "protocol":      payload["protocol"],
-        "action":        payload["action"],
-        "status":        "Active",
-        "lastTriggered": "Never",
-        "hits":          0,
-    }
-    sig_rules.insert(0, new_rule)
-    _add_log("admin","Custom Rule","Created",
-             f"{next_id} {payload['name']}","—","Active")
-    return {"success":True,"rule":new_rule}
-
-
-# ══════════════════════════════════════════════════════════════
-# SECTION 6 — RANSOMWARE RULES
-# ══════════════════════════════════════════════════════════════
-
-@router.get("/ransomware/rules")
-def get_ransom_rules():
-    active   = sum(1 for r in ransom_rules if r["status"]=="Active")
-    disabled = len(ransom_rules) - active
-    return {
-        "total":    len(ransom_rules),
-        "active":   active,
-        "disabled": disabled,
-        "rules":    ransom_rules,
-    }
-
-@router.post("/ransomware/rules/{rule_id}/toggle")
-def toggle_ransom_rule(rule_id: int):
-    for r in ransom_rules:
-        if r["id"] == rule_id:
-            old = r["status"]
-            r["status"] = "Disabled" if r["status"]=="Active" else "Active"
-            _add_log("admin","Ransomware",
-                     "Enabled" if r["status"]=="Active" else "Disabled",
-                     r["name"], old, r["status"])
-            return {"success":True,"rule":r}
-    raise HTTPException(404, f"Ransomware rule {rule_id} not found")
-
-
-# ══════════════════════════════════════════════════════════════
-# SECTION 7 — CHANGE LOG
-# ══════════════════════════════════════════════════════════════
-
-@router.get("/changelog")
-def get_changelog(
-    search: Optional[str] = None,
-    action: Optional[str] = None,
-    limit:  int           = 50,
+@router.get("/ransomware", response_model=list[RansomwareRuleOut])
+def list_ransomware(
+    enabled:    Optional[bool] = None,
+    risk_level: Optional[str]  = None,
+    db: Session = Depends(get_db),
 ):
-    result = change_log
-    if search and search != "All":
-        result = [l for l in result
-                  if search.lower() in l["rule"].lower()
-                  or search.lower() in l["by"].lower()]
-    if action and action != "All":
-        result = [l for l in result if l["action"] == action]
-    return {"total": len(result), "logs": result[:limit]}
+    q = db.query(RansomwareRule)
+    if enabled    is not None:         q = q.filter(RansomwareRule.enabled    == enabled)
+    if risk_level and risk_level != "All": q = q.filter(RansomwareRule.risk_level == risk_level)
+    return q.order_by(RansomwareRule.id).all()
+
+
+@router.post("/ransomware", response_model=RansomwareRuleOut, status_code=201)
+def create_ransomware(body: RansomwareRuleCreate, db: Session = Depends(get_db)):
+    if db.query(RansomwareRule).filter(RansomwareRule.id == body.id).first():
+        raise HTTPException(400, f"Rule {body.id} already exists")
+    rule = RansomwareRule(**body.model_dump())
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.patch("/ransomware/{rule_id}", response_model=RansomwareRuleOut)
+def update_ransomware(rule_id: str, body: RansomwareRuleUpdate, db: Session = Depends(get_db)):
+    rule = db.query(RansomwareRule).filter(RansomwareRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, f"Rule {rule_id} not found")
+    for field, val in body.model_dump(exclude_none=True).items():
+        setattr(rule, field, val)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.post("/ransomware/{rule_id}/toggle", response_model=RansomwareRuleOut)
+def toggle_ransomware(rule_id: str, db: Session = Depends(get_db)):
+    rule = db.query(RansomwareRule).filter(RansomwareRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, f"Rule {rule_id} not found")
+    rule.enabled = not rule.enabled
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+# ══════════════════════════════════════════════════════════════
+# 3. ANOMALY DETECTION CONFIG
+# ══════════════════════════════════════════════════════════════
+@router.get("/anomaly", response_model=AnomalyConfigOut)
+def get_anomaly(db: Session = Depends(get_db)):
+    return _get_or_create_singleton(db, AnomalyConfig)
+
+
+@router.patch("/anomaly", response_model=AnomalyConfigOut)
+def update_anomaly(body: AnomalyConfigUpdate, db: Session = Depends(get_db)):
+    cfg = _get_or_create_singleton(db, AnomalyConfig)
+    for field, val in body.model_dump(exclude_none=True).items():
+        setattr(cfg, field, val)
+    db.commit()
+    db.refresh(cfg)
+    return cfg
+
+
+# ══════════════════════════════════════════════════════════════
+# 4. NETWORK INTERFACES
+# ══════════════════════════════════════════════════════════════
+@router.get("/interfaces", response_model=list[NetworkInterfaceOut])
+def list_interfaces(db: Session = Depends(get_db)):
+    return db.query(NetworkInterface).order_by(NetworkInterface.name).all()
+
+
+@router.patch("/interfaces/{iface_name}", response_model=NetworkInterfaceOut)
+def update_interface(iface_name: str, body: NetworkInterfaceUpdate, db: Session = Depends(get_db)):
+    iface = db.query(NetworkInterface).filter(NetworkInterface.name == iface_name).first()
+    if not iface:
+        raise HTTPException(404, f"Interface {iface_name} not found")
+    for field, val in body.model_dump(exclude_none=True).items():
+        setattr(iface, field, val)
+    db.commit()
+    db.refresh(iface)
+    return iface
+
+
+# ══════════════════════════════════════════════════════════════
+# 5. BLOCKED IPs
+# ══════════════════════════════════════════════════════════════
+@router.get("/blocked-ips")
+def list_blocked(db: Session = Depends(get_db)):
+    return db.query(BlockedIP).order_by(BlockedIP.blocked_at.desc()).all()
+
+
+@router.post("/blocked-ips")
+def block_ip(body: dict, db: Session = Depends(get_db)):
+    ip = body.get("ip", "")
+    if not ip:
+        raise HTTPException(400, "ip is required")
+    existing = db.query(BlockedIP).filter(BlockedIP.ip == ip).first()
+    if existing:
+        return {"success": False, "message": f"{ip} is already blocked"}
+    entry = BlockedIP(ip=ip, reason=body.get("reason"), blocked_by=body.get("blocked_by", "admin"))
+    db.add(entry)
+    db.commit()
+    return {"success": True, "message": f"{ip} blocked"}
+
+
+@router.delete("/blocked-ips/{ip}")
+def unblock_ip(ip: str, db: Session = Depends(get_db)):
+    entry = db.query(BlockedIP).filter(BlockedIP.ip == ip).first()
+    if not entry:
+        raise HTTPException(404, f"{ip} not in blocklist")
+    db.delete(entry)
+    db.commit()
+    return {"success": True, "message": f"{ip} unblocked"}
+
+
+# ══════════════════════════════════════════════════════════════
+# 6. ALERT SETTINGS
+# ══════════════════════════════════════════════════════════════
+@router.get("/alerts", response_model=AlertSettingsOut)
+def get_alert_settings(db: Session = Depends(get_db)):
+    return _get_or_create_singleton(db, AlertSettings)
+
+
+@router.patch("/alerts", response_model=AlertSettingsOut)
+def update_alert_settings(body: AlertSettingsUpdate, db: Session = Depends(get_db)):
+    cfg = _get_or_create_singleton(db, AlertSettings)
+    for field, val in body.model_dump(exclude_none=True).items():
+        setattr(cfg, field, val)
+    db.commit()
+    db.refresh(cfg)
+    return cfg
+
+
+# ══════════════════════════════════════════════════════════════
+# 7. SYSTEM SETTINGS
+# ══════════════════════════════════════════════════════════════
+@router.get("/system", response_model=SystemSettingsOut)
+def get_system_settings(db: Session = Depends(get_db)):
+    return _get_or_create_singleton(db, SystemSettings)
+
+
+@router.patch("/system", response_model=SystemSettingsOut)
+def update_system_settings(body: SystemSettingsUpdate, db: Session = Depends(get_db)):
+    cfg = _get_or_create_singleton(db, SystemSettings)
+    for field, val in body.model_dump(exclude_none=True).items():
+        setattr(cfg, field, val)
+    db.commit()
+    db.refresh(cfg)
+    return cfg
+
+
+# ══════════════════════════════════════════════════════════════
+# 8. SNAPSHOT — hydrate full config page
+# ══════════════════════════════════════════════════════════════
+@router.get("/snapshot")
+def get_snapshot(db: Session = Depends(get_db)):
+    return {
+        "signatures":  list_signatures(db=db),
+        "ransomware":  list_ransomware(db=db),
+        "anomaly":     get_anomaly(db=db),
+        "interfaces":  list_interfaces(db=db),
+        "blocked_ips": list_blocked(db=db),
+        "alerts":      get_alert_settings(db=db),
+        "system":      get_system_settings(db=db),
+    }
+
+# ══════════════════════════════════════════════════════════════
+# FRONTEND ALIAS ROUTES — match old URL paths
+# ══════════════════════════════════════════════════════════════
+
+# /ransomware/rules → same as /ransomware
+@router.get("/ransomware/rules", response_model=list[RansomwareRuleOut])
+def list_ransomware_rules(db: Session = Depends(get_db)):
+    return list_ransomware(db=db)
+
+# /anomaly/settings → same as /anomaly
+@router.get("/anomaly/settings", response_model=AnomalyConfigOut)
+def get_anomaly_settings(db: Session = Depends(get_db)):
+    return get_anomaly(db=db)
+
+# /signature/status → summary counts of enabled/disabled
+@router.get("/signature/status")
+def get_signature_status(db: Session = Depends(get_db)):
+    from sqlalchemy import func as sqlfunc
+    total    = db.query(SignatureRule).count()
+    enabled  = db.query(SignatureRule).filter(SignatureRule.enabled == True).count()
+    disabled = total - enabled
+    last     = db.query(sqlfunc.max(SignatureRule.updated_at)).scalar()
+    return {
+        "enabled":      True,
+        "total":        total,
+        "active":       enabled,
+        "inactive":     disabled,
+        "last_updated": last.isoformat() if last else "2026-01-01T00:00:00",
+        "hit_rate":     "N/A",
+    }
+
+# /attackers → returns blocked IPs (used by config page attacker section)
+@router.get("/attackers")
+def get_attackers(db: Session = Depends(get_db)):
+    blocked = db.query(BlockedIP).order_by(BlockedIP.blocked_at.desc()).all()
+    attackers = [
+        {
+            "ip":         b.ip,
+            "country":    "Unknown",
+            "type":       "Blocked",
+            "firstSeen":  b.blocked_at.strftime("%Y-%m-%d %H:%M") if b.blocked_at else "N/A",
+            "lastSeen":   b.blocked_at.strftime("%Y-%m-%d %H:%M") if b.blocked_at else "N/A",
+            "packets":    0,
+            "status":     "Blocked",
+            "reason":     b.reason or "Manual block",
+        }
+        for b in blocked
+    ]
+    return {"attackers": attackers}
+
+# /changelog → returns last 100 audit-style changes (stub for now)
+@router.get("/changelog")
+def get_changelog(limit: int = 100, db: Session = Depends(get_db)):
+    # Returns recent sig + ransomware rule changes ordered by updated_at
+    sigs = db.query(SignatureRule).order_by(SignatureRule.updated_at.desc()).limit(limit).all()
+    rans = db.query(RansomwareRule).order_by(RansomwareRule.updated_at.desc()).limit(limit).all()
+    changelog = []
+    for r in sigs:
+        changelog.append({"id": r.id, "name": r.name, "type": "Signature", "updated_at": r.updated_at, "enabled": r.enabled})
+    for r in rans:
+        changelog.append({"id": r.id, "name": r.name, "type": "Ransomware", "updated_at": r.updated_at, "enabled": r.enabled})
+    changelog.sort(key=lambda x: x["updated_at"], reverse=True)
+    return {"changelog": changelog[:limit]}
+
+
+# ══════════════════════════════════════════════════════════════
+# ATTACKERS — wrapped response with type field
+# ══════════════════════════════════════════════════════════════
+@router.get("/attackers/list")
+def get_attackers_list(db: Session = Depends(get_db)):
+    blocked = db.query(BlockedIP).order_by(BlockedIP.blocked_at.desc()).all()
+    attackers = [
+        {
+            "ip":         b.ip,
+            "type":       "Blocked",
+            "reason":     b.reason or "Manual block",
+            "blocked_by": b.blocked_by,
+            "blocked_at": b.blocked_at,
+            "status":     "Blocked",
+        }
+        for b in blocked
+    ]
+    return {"attackers": attackers}
+
+
+# OVERRIDE — correct shape for frontend
+@router.get("/attackers/full")
+def get_attackers_full(db: Session = Depends(get_db)):
+    blocked = db.query(BlockedIP).order_by(BlockedIP.created_at.desc()).all()
+    return {"attackers": [
+        {
+            "ip":        b.ip,
+            "country":   "Unknown",
+            "type":      "Blocked",
+            "firstSeen": b.blocked_at.strftime("%Y-%m-%d %H:%M") if b.blocked_at else "N/A",
+            "lastSeen":  b.blocked_at.strftime("%Y-%m-%d %H:%M") if b.blocked_at else "N/A",
+            "packets":   0,
+            "status":    "Blocked",
+        }
+        for b in blocked
+    ]}
+
+
+# ══════════════════════════════════════════════════════════════
+# SIGNATURE ENGINE — hot reload + stats
+# ══════════════════════════════════════════════════════════════
+@router.post("/signatures/reload")
+def reload_signatures(db: Session = Depends(get_db)):
+    """Hot-reload signature rules into the live engine."""
+    try:
+        from signature_engine import reload_rules, get_rule_stats
+        count = reload_rules()
+        return {"success": True, "loaded": count, "message": f"Reloaded {count} rules into engine"}
+    except Exception as e:
+        raise HTTPException(500, f"Reload failed: {e}")
+
+
+@router.get("/signatures/stats")
+def get_signature_stats(db: Session = Depends(get_db)):
+    """Return hit counts per rule from the live engine."""
+    try:
+        from signature_engine import get_rule_stats
+        hits = get_rule_stats()
+        rules = db.query(SignatureRule).all()
+        return {
+            "stats": [
+                {
+                    "id":      r.id,
+                    "name":    r.name,
+                    "hits":    hits.get(r.id, 0),
+                    "enabled": r.enabled,
+                    "action":  r.action,
+                }
+                for r in rules
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@router.post("/blocked-ips/enforce")
+def enforce_blocked_ips(db: Session = Depends(get_db)):
+    """Apply all blocked IPs from DB to iptables."""
+    try:
+        from signature_engine import block_ip_now
+        blocked = db.query(BlockedIP).all()
+        count = 0
+        for b in blocked:
+            block_ip_now(b.ip)
+            count += 1
+        return {"success": True, "enforced": count, "message": f"Applied {count} IPs to iptables"}
+    except Exception as e:
+        raise HTTPException(500, str(e))

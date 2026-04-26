@@ -1,133 +1,107 @@
-"""
-routers/audits.py
-=================
-All /api/audits/* endpoints for the Audits & Analytics page.
-
-Sections:
-  1. Summary Metrics      — total alerts, incidents, malicious/suspicious traffic
-  2. Trend Analysis       — pie chart data + line chart by period (24h/7d/30d)
-  3. Detection Distribution — bar breakdown by detection engine
-  4. Traffic by Protocol  — per-protocol packet/percentage stats
-  5. Severity Outcomes    — resolution rates by severity
-  6. Malicious IPs        — top threat source IPs
-  7. Audit Log            — immutable audit trail with rollback support
-"""
-
-from fastapi import APIRouter, Query
+# idps-backend/routers/audits.py
+from fastapi import APIRouter, Query, Depends, HTTPException
+from sqlalchemy.orm import Session
+from sqlalchemy import func as sqlfunc
 from typing import Optional
-from datetime import datetime, timedelta
-import random
+from datetime import datetime
+
+from database import get_db
+from models.audit import AuditLog, MaliciousIP
+from models.incident import Detection, Incident
 
 router = APIRouter(prefix="/api/audits", tags=["Audits"])
 
-# ══════════════════════════════════════════════════════════════
-# IN-MEMORY STATE
-# ══════════════════════════════════════════════════════════════
-
-malicious_ips = [
-    {"ip":"185.220.101.47","events":4821,"type":"Anomaly",   "avgSev":"Critical","protocol":"TCP", "country":"Russia",     "lastSeen":"2026-02-24 09:10"},
-    {"ip":"194.165.16.78", "events":3912,"type":"Anomaly",   "avgSev":"Critical","protocol":"UDP", "country":"Iran",       "lastSeen":"2026-02-24 09:08"},
-    {"ip":"103.75.190.12", "events":2244,"type":"Signature", "avgSev":"High",    "protocol":"HTTP","country":"China",      "lastSeen":"2026-02-24 09:01"},
-    {"ip":"77.83.246.90",  "events":1987,"type":"Signature", "avgSev":"High",    "protocol":"HTTP","country":"Germany",    "lastSeen":"2026-02-24 09:05"},
-    {"ip":"91.108.4.200",  "events":1543,"type":"Signature", "avgSev":"High",    "protocol":"TCP", "country":"Ukraine",    "lastSeen":"2026-02-24 08:44"},
-    {"ip":"5.188.206.14",  "events":1102,"type":"Ransomware","avgSev":"Critical","protocol":"TCP", "country":"Luxembourg", "lastSeen":"2026-02-24 08:59"},
-    {"ip":"45.142.212.100","events":891, "type":"Signature", "avgSev":"Medium",  "protocol":"TCP", "country":"Netherlands","lastSeen":"2026-02-24 08:44"},
-    {"ip":"162.247.74.200","events":612, "type":"Anomaly",   "avgSev":"Medium",  "protocol":"HTTP","country":"USA",        "lastSeen":"2026-02-23 23:00"},
-    {"ip":"203.0.113.9",   "events":488, "type":"Signature", "avgSev":"High",    "protocol":"HTTP","country":"Brazil",     "lastSeen":"2026-02-24 07:55"},
-    {"ip":"198.51.100.7",  "events":204, "type":"Anomaly",   "avgSev":"Low",     "protocol":"TCP", "country":"Unknown",    "lastSeen":"2026-02-24 07:00"},
-]
-
-audit_logs = [
-    {"id":"AUD-015","timestamp":"2026-02-24 09:10","actor":"admin",   "changeType":"Modified", "target":"SIG-003 SYN Flood",       "action":"Action changed",       "details":"Alert to Drop",              "rolled_back":False},
-    {"id":"AUD-014","timestamp":"2026-02-24 08:58","actor":"admin",   "changeType":"Enabled",  "target":"LockBit Network Pattern", "action":"Rule enabled",         "details":"Disabled to Active",         "rolled_back":False},
-    {"id":"AUD-013","timestamp":"2026-02-24 08:30","actor":"soc_lead","changeType":"Modified", "target":"Anomaly Sensitivity",     "action":"Setting updated",      "details":"Medium to High",             "rolled_back":False},
-    {"id":"AUD-012","timestamp":"2026-02-24 08:10","actor":"admin",   "changeType":"Created",  "target":"Custom-SSH-Geo-Block",    "action":"New rule created",     "details":"Severity High, Action Block","rolled_back":False},
-    {"id":"AUD-011","timestamp":"2026-02-24 07:45","actor":"analyst1","changeType":"Disabled", "target":"SIG-008 HTTP Slowloris",  "action":"Rule disabled",        "details":"Active to Inactive",         "rolled_back":False},
-    {"id":"AUD-010","timestamp":"2026-02-24 07:00","actor":"admin",   "changeType":"Modified", "target":"AES Pattern Detection",   "action":"Risk level updated",   "details":"High to Critical",           "rolled_back":False},
-    {"id":"AUD-009","timestamp":"2026-02-23 22:15","actor":"soc_lead","changeType":"Modified", "target":"Packet Size Threshold",   "action":"Threshold updated",    "details":"1200 to 1500 bytes",         "rolled_back":False},
-    {"id":"AUD-008","timestamp":"2026-02-23 18:00","actor":"admin",   "changeType":"Created",  "target":"SIG-015 Stored XSS",      "action":"New signature created","details":"Severity High HTTP",         "rolled_back":False},
-    {"id":"AUD-007","timestamp":"2026-02-23 14:30","actor":"analyst2","changeType":"Disabled", "target":"Legacy Ransomware Rule",  "action":"Rule disabled",        "details":"Marked as deprecated",       "rolled_back":False},
-    {"id":"AUD-006","timestamp":"2026-02-23 10:00","actor":"admin",   "changeType":"Deleted",  "target":"SIG-OLD-001 Obsolete",    "action":"Rule deleted",         "details":"Rule ID retired permanently","rolled_back":False},
-    {"id":"AUD-005","timestamp":"2026-02-22 16:45","actor":"soc_lead","changeType":"Modified", "target":"Traffic Rate Threshold",  "action":"Threshold updated",    "details":"5000 to 10000 pps",          "rolled_back":False},
-    {"id":"AUD-004","timestamp":"2026-02-22 12:00","actor":"admin",   "changeType":"Created",  "target":"Custom-DDoS-Rate-Limit",  "action":"Custom rule created",  "details":"Severity Critical Drop",     "rolled_back":False},
-    {"id":"AUD-003","timestamp":"2026-02-22 09:30","actor":"analyst1","changeType":"Modified", "target":"Auto IP Blocking",        "action":"Toggle updated",       "details":"OFF to ON",                  "rolled_back":False},
-    {"id":"AUD-002","timestamp":"2026-02-21 18:00","actor":"admin",   "changeType":"Enabled",  "target":"Firewall Integration",    "action":"Module enabled",       "details":"Integration activated",      "rolled_back":False},
-    {"id":"AUD-001","timestamp":"2026-02-21 10:00","actor":"soc_lead","changeType":"Modified", "target":"Baseline Learning Period","action":"Setting updated",      "details":"6 hours to 24 hours",        "rolled_back":False},
-]
-
-# trend data — keyed by period
 TREND_DATA = {
     "24h": [4200,3800,5100,4600,5800,6200,5500,6800,7200,6100,5900,7400],
     "7d":  [31000,28000,35000,42000,38000,45000,51000],
-    "30d": [120000,135000,128000,142000,158000,149000,165000,172000,160000,178000,182000,195000,188000,202000,210000],
+    "30d": [120000,135000,128000,142000,158000,149000,165000,172000,160000,
+            178000,182000,195000,188000,202000,210000],
 }
 
-# sparkline data (7-point each)
 SPARKLINES = [
-    [40,55,48,62,58,71,65],   # total alerts
-    [88,72,80,75,82,78,85],   # incidents resolved
-    [12,18,15,22,28,24,31],   # malicious traffic
-    [33,41,38,45,42,50,47],   # suspicious traffic
+    [40,55,48,62,58,71,65],
+    [88,72,80,75,82,78,85],
+    [12,18,15,22,28,24,31],
+    [33,41,38,45,42,50,47],
 ]
 
 
 # ══════════════════════════════════════════════════════════════
-# 1. SUMMARY METRICS
+# 1. SUMMARY — computed from DB
 # ══════════════════════════════════════════════════════════════
 @router.get("/summary")
-def get_summary():
-    """4 top stat cards with sparkline data."""
+def get_summary(db: Session = Depends(get_db)):
+    total      = db.query(Detection).count()
+    resolved   = db.query(Incident).filter(Incident.status.in_(["Resolved","Closed"])).count()
+    malicious  = db.query(Detection).filter(Detection.classification == "Malicious").count()
+    suspicious = db.query(Detection).filter(Detection.classification == "Suspicious").count()
     return {
         "metrics": [
-            {"label":"Total Alerts",       "value":108844,"change":"+12.4%","up":True, "color":"#00d4ff","sub":"All detections today",   "spark":SPARKLINES[0]},
-            {"label":"Incidents Resolved", "value":6291,  "change":"+8.1%", "up":True, "color":"#00ff9f","sub":"Closed in last 24h",     "spark":SPARKLINES[1]},
-            {"label":"Malicious Traffic",  "value":31204, "change":"+22.7%","up":True, "color":"#ff006e","sub":"Confirmed threats",       "spark":SPARKLINES[2]},
-            {"label":"Suspicious Traffic", "value":17832, "change":"-4.3%", "up":False,"color":"#ffbe0b","sub":"Flagged for review",      "spark":SPARKLINES[3]},
+            {"label":"Total Alerts",       "value":total,     "change":"+12.4%","up":True, "color":"#00d4ff","sub":"All detections",       "spark":SPARKLINES[0]},
+            {"label":"Incidents Resolved", "value":resolved,  "change":"+8.1%", "up":True, "color":"#00ff9f","sub":"Closed incidents",      "spark":SPARKLINES[1]},
+            {"label":"Malicious Traffic",  "value":malicious, "change":"+22.7%","up":True, "color":"#ff006e","sub":"Confirmed threats",      "spark":SPARKLINES[2]},
+            {"label":"Suspicious Traffic", "value":suspicious,"change":"-4.3%", "up":False,"color":"#ffbe0b","sub":"Flagged for review",     "spark":SPARKLINES[3]},
         ]
     }
 
 
 # ══════════════════════════════════════════════════════════════
-# 2. TREND ANALYSIS
+# 2. TREND
 # ══════════════════════════════════════════════════════════════
 @router.get("/trend")
-def get_trend(period: str = Query("7d", description="24h | 7d | 30d")):
-    """Line chart data + pie chart breakdown."""
+def get_trend(
+    period: str = Query("7d"),
+    db: Session = Depends(get_db),
+):
     if period not in TREND_DATA:
         period = "7d"
+
+    # Compute pie from real DB data
+    rows = db.query(Detection.det_type, sqlfunc.count(Detection.id))\
+             .group_by(Detection.det_type).all()
+    total = db.query(Detection).count() or 1
+    colors = {"Signature":"#00ff9f","Anomaly":"#ffbe0b","Ransomware":"#f97316"}
+    pie = [
+        {"label":r[0],"value":r[1],"color":colors.get(r[0],"#94a3b8"),
+         "pct": round(r[1]/total*100,1)}
+        for r in rows
+    ]
     return {
-        "period":    period,
-        "trend":     TREND_DATA[period],
-        "pie": [
-            {"label":"Signature", "value":84721,"color":"#00ff9f","pct":77.8},
-            {"label":"Anomaly",   "value":17832,"color":"#ffbe0b","pct":16.4},
-            {"label":"Ransomware","value":6291, "color":"#f97316","pct":5.8 },
-        ],
-        "total": 108844,
+        "period": period,
+        "trend":  TREND_DATA[period],
+        "pie":    pie,
+        "total":  total,
     }
 
 
 # ══════════════════════════════════════════════════════════════
-# 3. DETECTION DISTRIBUTION
+# 3. DETECTION DISTRIBUTION — computed from DB
 # ══════════════════════════════════════════════════════════════
 @router.get("/detection-distribution")
-def get_detection_distribution():
-    """Horizontal bar chart by detection engine."""
+def get_detection_distribution(db: Session = Depends(get_db)):
+    rows  = db.query(Detection.det_type, sqlfunc.count(Detection.id))\
+              .group_by(Detection.det_type).all()
+    total = db.query(Detection).count() or 1
+    colors = {"Anomaly":"#ffbe0b","Signature":"#00ff9f","Ransomware":"#f97316"}
+    descs  = {
+        "Anomaly":   "Behavioral baseline deviation — traffic anomalies and unusual patterns flagged",
+        "Signature": "Pattern-matched against active signature rules covering SQL, XSS, DDoS and malware",
+        "Ransomware":"Encryption pattern analysis, file system monitoring and registry change detection",
+    }
     return {
         "distributions": [
-            {"label":"Anomaly Detection",    "pct":16,"color":"#ffbe0b","desc":"Behavioral baseline deviation — traffic anomalies and unusual patterns flagged"},
-            {"label":"Signature Detection",  "pct":78,"color":"#00ff9f","desc":"Pattern-matched against 15 active signature rules covering SQL, XSS, DDoS and malware"},
-            {"label":"Ransomware Detection", "pct":6, "color":"#f97316","desc":"Encryption pattern analysis, file system monitoring and registry change detection"},
+            {"label":f"{r[0]} Detection","pct":round(r[1]/total*100),
+             "color":colors.get(r[0],"#94a3b8"),"desc":descs.get(r[0],"")}
+            for r in rows
         ]
     }
 
 
 # ══════════════════════════════════════════════════════════════
-# 4. TRAFFIC BY PROTOCOL
+# 4. TRAFFIC BY PROTOCOL — static (no protocol table yet)
 # ══════════════════════════════════════════════════════════════
 @router.get("/traffic-protocol")
 def get_traffic_protocol():
-    """Protocol breakdown cards."""
     return {
         "protocols": [
             {"proto":"TCP",   "pct":45,"packets":1842301,"color":"#00d4ff","status":"HIGH"    },
@@ -140,35 +114,56 @@ def get_traffic_protocol():
 
 
 # ══════════════════════════════════════════════════════════════
-# 5. SEVERITY OUTCOMES
+# 5. SEVERITY OUTCOMES — computed from DB
 # ══════════════════════════════════════════════════════════════
 @router.get("/severity-outcomes")
-def get_severity_outcomes():
-    """Incident count + resolution rate per severity."""
+def get_severity_outcomes(db: Session = Depends(get_db)):
+    colors = {"Critical":"#ff006e","High":"#f97316","Medium":"#ffbe0b","Low":"#00ff9f"}
+    outcomes = []
+    for sev in ["Critical","High","Medium"]:
+        total    = db.query(Incident).filter(Incident.severity == sev).count()
+        resolved = db.query(Incident).filter(
+            Incident.severity == sev,
+            Incident.status.in_(["Resolved","Closed"])
+        ).count()
+        if total > 0:
+            outcomes.append({
+                "label":    sev,
+                "count":    total,
+                "resolved": round(resolved / total * 100),
+                "color":    colors[sev],
+            })
+    return {"outcomes": outcomes}
+
+
+# ══════════════════════════════════════════════════════════════
+# 6. MALICIOUS IPs — from DB
+# ══════════════════════════════════════════════════════════════
+@router.get("/malicious-ips")
+def get_malicious_ips(
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(MaliciousIP).order_by(MaliciousIP.events.desc())
+    if search:
+        q = q.filter(
+            MaliciousIP.ip.ilike(f"%{search}%") |
+            MaliciousIP.type.ilike(f"%{search}%")
+        )
+    rows = q.all()
     return {
-        "outcomes": [
-            {"label":"Critical","count":3847, "resolved":72,"color":"#ff006e"},
-            {"label":"High",    "count":22047,"resolved":85,"color":"#f97316"},
-            {"label":"Medium",  "count":28900,"resolved":91,"color":"#ffbe0b"},
+        "total": len(rows),
+        "ips": [
+            {"ip":r.ip,"events":r.events,"type":r.type,
+             "avgSev":r.avg_sev,"protocol":r.protocol,
+             "country":r.country,"lastSeen":r.last_seen}
+            for r in rows
         ]
     }
 
 
 # ══════════════════════════════════════════════════════════════
-# 6. MALICIOUS IPs
-# ══════════════════════════════════════════════════════════════
-@router.get("/malicious-ips")
-def get_malicious_ips(search: Optional[str] = None):
-    """Top threat source IPs, filterable."""
-    result = malicious_ips
-    if search:
-        result = [ip for ip in result
-                  if search in ip["ip"] or search.lower() in ip["type"].lower()]
-    return {"total": len(result), "ips": result}
-
-
-# ══════════════════════════════════════════════════════════════
-# 7. AUDIT LOG
+# 7. AUDIT LOGS — from DB
 # ══════════════════════════════════════════════════════════════
 @router.get("/logs")
 def get_audit_logs(
@@ -177,59 +172,86 @@ def get_audit_logs(
     search:     Optional[str] = None,
     sort_asc:   bool          = False,
     limit:      int           = 100,
+    db: Session = Depends(get_db),
 ):
-    """Full immutable audit trail, filterable."""
-    result = list(audit_logs)
+    q = db.query(AuditLog)
     if actor and actor != "All":
-        result = [l for l in result if l["actor"] == actor]
+        q = q.filter(AuditLog.actor == actor)
     if changeType and changeType != "All":
-        result = [l for l in result if l["changeType"] == changeType]
+        q = q.filter(AuditLog.change_type == changeType)
     if search:
-        result = [l for l in result
-                  if search.lower() in l["target"].lower()
-                  or search.lower() in l["actor"].lower()]
-    result.sort(key=lambda x: x["timestamp"], reverse=not sort_asc)
-    return {"total": len(result), "logs": result[:limit]}
+        q = q.filter(
+            AuditLog.target.ilike(f"%{search}%") |
+            AuditLog.actor.ilike(f"%{search}%")
+        )
+    order = AuditLog.timestamp.asc() if sort_asc else AuditLog.timestamp.desc()
+    rows = q.order_by(order).limit(limit).all()
+    return {
+        "total": len(rows),
+        "logs": [
+            {"id":r.id,"timestamp":r.timestamp,"actor":r.actor,
+             "changeType":r.change_type,"target":r.target,
+             "action":r.action,"details":r.details,
+             "rolled_back":r.rolled_back}
+            for r in rows
+        ]
+    }
 
 
 @router.post("/logs/{log_id}/rollback")
-def rollback_log(log_id: str):
-    """Mark a log entry as rolled back and record a new audit entry."""
-    for log in audit_logs:
-        if log["id"] == log_id:
-            if log["rolled_back"]:
-                return {"success": False, "message": f"{log_id} already rolled back"}
-            log["rolled_back"] = True
-            # Add a new audit entry for the rollback itself
-            nums = [int(l["id"].split("-")[1]) for l in audit_logs]
-            new_id = f"AUD-{(max(nums)+1):03d}"
-            rollback_entry = {
-                "id":          new_id,
-                "timestamp":   datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "actor":       "admin",
-                "changeType":  "Modified",
-                "target":      log["target"],
-                "action":      f"Rollback of {log_id}",
-                "details":     f"Reverted: {log['details']}",
-                "rolled_back": False,
-            }
-            audit_logs.insert(0, rollback_entry)
-            return {"success": True, "message": f"Rollback triggered for {log_id}", "new_entry": rollback_entry}
-    return {"success": False, "message": f"{log_id} not found"}
+def rollback_log(log_id: str, db: Session = Depends(get_db)):
+    log = db.query(AuditLog).filter(AuditLog.id == log_id).first()
+    if not log:
+        raise HTTPException(404, f"{log_id} not found")
+    if log.rolled_back:
+        return {"success": False, "message": f"{log_id} already rolled back"}
+
+    log.rolled_back = True
+
+    # Generate new AUD ID
+    max_num = db.query(sqlfunc.max(AuditLog.id)).scalar()
+    try:
+        next_num = int(max_num.split("-")[1]) + 1
+    except:
+        next_num = 99
+    new_id = f"AUD-{next_num:03d}"
+
+    new_entry = AuditLog(
+        id=new_id,
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        actor="admin",
+        change_type="Modified",
+        target=log.target,
+        action=f"Rollback of {log_id}",
+        details=f"Reverted: {log.details}",
+        rolled_back=False,
+    )
+    db.add(new_entry)
+    db.commit()
+    db.refresh(new_entry)
+    return {
+        "success": True,
+        "message": f"Rollback triggered for {log_id}",
+        "new_entry": {
+            "id":new_entry.id,"timestamp":new_entry.timestamp,
+            "actor":new_entry.actor,"changeType":new_entry.change_type,
+            "target":new_entry.target,"action":new_entry.action,
+            "details":new_entry.details,"rolled_back":new_entry.rolled_back,
+        }
+    }
 
 
 # ══════════════════════════════════════════════════════════════
-# 8. ALL-IN-ONE SNAPSHOT (page load)
+# 8. SNAPSHOT
 # ══════════════════════════════════════════════════════════════
 @router.get("/snapshot")
-def get_snapshot():
-    """Single call to hydrate the entire Audits page at once."""
+def get_snapshot(db: Session = Depends(get_db)):
     return {
-        "summary":               get_summary(),
-        "trend":                 get_trend("7d"),
-        "detection_distribution":get_detection_distribution(),
-        "traffic_protocol":      get_traffic_protocol(),
-        "severity_outcomes":     get_severity_outcomes(),
-        "malicious_ips":         get_malicious_ips(),
-        "audit_logs":            get_audit_logs(),
+        "summary":                get_summary(db=db),
+        "trend":                  get_trend(db=db),
+        "detection_distribution": get_detection_distribution(db=db),
+        "traffic_protocol":       get_traffic_protocol(),
+        "severity_outcomes":      get_severity_outcomes(db=db),
+        "malicious_ips":          get_malicious_ips(db=db),
+        "audit_logs":             get_audit_logs(db=db),
     }

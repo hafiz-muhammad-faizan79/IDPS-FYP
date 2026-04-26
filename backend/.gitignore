@@ -1,1 +1,64 @@
+# =========================
+# ENV FILES
+# =========================
 .env
+.env.*
+*.env
+
+# =========================
+# PYTHON CACHE
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+backend/__pycache__/
+**/__pycache__/
+
+# =========================
+# VIRTUAL ENV
+# =========================
+venv/
+.venv/
+env/
+ENV/
+
+# =========================
+# LOG FILES
+# =========================
+*.log
+
+# =========================
+# DATABASE FILES (if any local sqlite)
+# =========================
+*.sqlite3
+*.db
+
+# =========================
+# IDE SETTINGS
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# TEST / CACHE
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+
+# =========================
+# ALEMBIC (IMPORTANT)
+# =========================
+backend/alembic/versions/*.pyc
+backend/alembic/__pycache__/
+
+# DO NOT ignore env.py (it's required)
+# DO NOT ignore migrations unless you explicitly want to ignore them (they are important for database schema management)
