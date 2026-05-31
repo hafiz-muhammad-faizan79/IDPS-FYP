@@ -15,6 +15,11 @@ class User(Base):
     role       = Column(String(50),  nullable=False, default="analyst")
     avatar     = Column(String(5),   nullable=True)      # initials e.g. "AR"
     is_active  = Column(Boolean,     default=True)
-    last_login = Column(DateTime(timezone=True), nullable=True)
+    phone              = Column(String(20),  nullable=True)
+    verified           = Column(Boolean,     default=False)
+    verification_token = Column(String(64),  nullable=True)
+    reset_token        = Column(String(64),  nullable=True)
+    reset_token_expiry = Column(DateTime(timezone=True), nullable=True)
+    last_login         = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

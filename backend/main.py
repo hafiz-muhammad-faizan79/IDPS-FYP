@@ -116,6 +116,11 @@ admin.add_view(BlockedIPAdmin)
 @app.on_event("startup")
 async def on_startup():
     start_monitor()
+    try:
+        from correlation_engine import start_correlation_engine
+        start_correlation_engine()
+    except Exception as e:
+        print(f"[STARTUP] Correlation engine failed: {e}")
     print("[STARTUP] CyGuardian-X backend ready ✓")
 
 

@@ -33,3 +33,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ── Extra safety additions ─────────────────────────────
+*.backup
+*.bak
+*~
+.idea/
+.vscode/
+BEEOF

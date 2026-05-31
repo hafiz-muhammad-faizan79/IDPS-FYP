@@ -37,6 +37,17 @@ else:
 
 import psutil
 
+# ── DeepDefend AI Engine ──────────────────────────────────────
+try:
+    from deepdefend_engine import (
+        add_packet as deepdefend_add_packet,
+        start_deepdefend_engine,
+    )
+    DEEPDEFEND_AVAILABLE = True
+except ImportError as e:
+    DEEPDEFEND_AVAILABLE = False
+    print(f"[WARN] DeepDefend not available: {e}")
+
 # ── Signature Rules Engine ─────────────────────────────────────
 try:
     from signature_engine import match_packet, start_signature_engine
@@ -454,8 +465,16 @@ def _process_real_packet(pkt):
                 except Exception:
                     payload = ""
             match_packet(src, dst, display_proto, port, payload, pkt)
-        except Exception as e:
-            pass  # never crash the capture thread
+        except Exception:
+            pass
+
+    # ── DeepDefend AI flow aggregation ────────────────────────
+    if DEEPDEFEND_AVAILABLE:
+        try:
+            flags = pkt["TCP"].flags if pkt.haslayer("TCP") else None
+            deepdefend_add_packet(src, dst, display_proto, port, length, flags)
+        except Exception:
+            pass
 
     # Store every 10th packet in DB (non-blocking)
     if random.random() < 0.1:
@@ -571,6 +590,10 @@ def start_monitor():
     # Start signature rules engine
     if SIG_ENGINE_AVAILABLE:
         start_signature_engine()
+
+    # Start DeepDefend AI engine
+    if DEEPDEFEND_AVAILABLE:
+        start_deepdefend_engine()
 
     if USE_REAL_CAPTURE and SCAPY_AVAILABLE:
         t = threading.Thread(target=_real_engine, daemon=True)

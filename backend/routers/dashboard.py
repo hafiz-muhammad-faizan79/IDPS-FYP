@@ -57,33 +57,56 @@ def get_detections(db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════════
 @router.get("/alert-trends")
 def get_alert_trends(db: Session = Depends(get_db)):
-    rows = db.query(Detection.severity, sqlfunc.count(Detection.id))\
-             .group_by(Detection.severity).all()
-    colors = {
-        "Critical": "#ff006e",
-        "High":     "#f97316",
-        "Medium":   "#ffbe0b",
-        "Low":      "#00ff9f",
-        "Info":     "#94a3b8",
+    """Return last 7 days of detection counts grouped by category and day."""
+    from datetime import datetime, timedelta
+    from models.network import NetworkAlert
+
+    now    = datetime.utcnow()
+    cutoff = now - timedelta(days=7)
+
+    def classify(message: str) -> str:
+        if not message:
+            return "anomaly"
+        m = message.lower()
+        if "ran-" in m or "ransom" in m or "wannacry" in m or "lockbit" in m:
+            return "ransomware"
+        if "[sig-" in m or "signature" in m or "shieldnet" in m:
+            return "signature"
+        if "deepdefend" in m or "ai " in m or "anomaly" in m or "correlation" in m:
+            return "anomaly"
+        return "signature"
+
+    # 7-day buckets — bucket[6] = today, bucket[0] = 6 days ago
+    day_labels = []
+    for d in range(6, -1, -1):
+        dt = now - timedelta(days=d)
+        day_labels.append({
+            "date":      dt.strftime("%a"),         # Mon, Tue, etc.
+            "full_date": dt.strftime("%Y-%m-%d"),
+            "signature":  0,
+            "anomaly":    0,
+            "ransomware": 0,
+        })
+
+    alerts = db.query(NetworkAlert).filter(NetworkAlert.created_at >= cutoff).all()
+    for a in alerts:
+        if not a.created_at:
+            continue
+        cat = classify(a.message or "")
+        days_ago = (now - a.created_at.replace(tzinfo=None)).days
+        bucket   = max(0, min(6, 6 - days_ago))
+        day_labels[bucket][cat] += 1
+
+    # Totals across all 7 days
+    totals = {
+        "signature":  sum(d["signature"]  for d in day_labels),
+        "anomaly":    sum(d["anomaly"]    for d in day_labels),
+        "ransomware": sum(d["ransomware"] for d in day_labels),
     }
-    # Sparkline placeholder — 7 points per severity
-    sparks = {
-        "Critical": [3,5,4,7,6,8,9],
-        "High":     [8,6,9,7,10,8,11],
-        "Medium":   [12,10,14,11,13,15,12],
-        "Low":      [5,7,6,8,5,9,7],
-        "Info":     [2,3,2,4,3,2,3],
-    }
+
     return {
-        "trends": [
-            {
-                "severity": r[0],
-                "count":    r[1],
-                "color":    colors.get(r[0], "#94a3b8"),
-                "spark":    sparks.get(r[0], [1,1,1,1,1,1,1]),
-            }
-            for r in rows
-        ]
+        "days":   day_labels,
+        "totals": totals,
     }
 
 

@@ -9,6 +9,7 @@ Hot-reloads rules every 30 seconds or on demand.
 """
 
 import re
+from threat_utils import pick_attacker_ip
 import threading
 import time
 import subprocess
@@ -245,6 +246,13 @@ def match_packet(src: str, dst: str, proto: str, port: int,
             f"[{rule['id']}] {rule['name']}",
             f"Signature matched on {proto}:{port} from {src} → {dst}"
         )
+        # Hook into correlation engine — use unified attacker IP
+        try:
+            from correlation_engine import report_shieldnet_match
+            attacker = pick_attacker_ip(src, dst)
+            report_shieldnet_match(attacker, rule["id"], rule["name"], rule["severity"], action)
+        except Exception:
+            pass
 
         # Log to DB in background
         threading.Thread(

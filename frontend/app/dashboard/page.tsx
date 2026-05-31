@@ -321,9 +321,9 @@ function AlertTrends({ data }: { data: TrendData | null }) {
               {/* Stacked bar — ransomware on top, signature middle, anomaly base */}
               <div className="w-full rounded-t overflow-hidden flex flex-col-reverse transition-all duration-300"
                 style={{ height: `${Math.max(h, 4)}%`, opacity: hovered === null || hovered === i ? 1 : 0.4 }}>
-                <div style={{ flex: day.anomaly,   background: "#ffbe0b", boxShadow: hovered===i?"0 0 8px #ffbe0b":"none" }}/>
-                <div style={{ flex: day.signature, background: "#00ff9f", boxShadow: hovered===i?"0 0 8px #00ff9f":"none" }}/>
-                <div style={{ flex: day.ransomware,background: "#ff006e", boxShadow: hovered===i?"0 0 8px #ff006e":"none" }}/>
+                <div style={{ flex: day.anomaly,    minHeight: day.anomaly>0?2:0,    background: "#ffbe0b", boxShadow: hovered===i?"0 0 8px #ffbe0b":"none" }}/>
+                <div style={{ flex: day.signature,  minHeight: day.signature>0?2:0,  background: "#00ff9f", boxShadow: hovered===i?"0 0 8px #00ff9f":"none" }}/>
+                <div style={{ flex: day.ransomware, minHeight: day.ransomware>0?2:0, background: "#ff006e", boxShadow: hovered===i?"0 0 8px #ff006e":"none" }}/>
               </div>
               <span className="text-[8px] font-mono text-slate-700">{day.date}</span>
             </div>
@@ -509,6 +509,299 @@ function QuickAccess({ data }: { data: QAData | null }) {
 // ════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// LIVE THREAT CORRELATIONS — Real-time hybrid IDPS decisions
+// ══════════════════════════════════════════════════════════════
+type Correlation = {
+  src_ip: string;
+  shieldnet_matches: number;
+  deepdefend_matches: number;
+  is_known_bad: boolean;
+  timestamp: string;
+  severity: "Info"|"Low"|"Medium"|"High"|"Critical";
+  confidence: number;
+  category: string;
+  recommended: string;
+  reason: string;
+  engines: { shieldnet: string[]; deepdefend: {class:string;conf:number}[] };
+};
+
+type CorrelationStats = {
+  total_correlations: number;
+  both_engines_match: number;
+  shieldnet_only: number;
+  deepdefend_only: number;
+  false_positives_filtered: number;
+  active_shieldnet_ips: number;
+  active_deepdefend_ips: number;
+  blocked_ip_count: number;
+};
+
+function LiveCorrelations() {
+  const [stats, setStats]         = useState<CorrelationStats|null>(null);
+  const [items, setItems]         = useState<Correlation[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [paused, setPaused]       = useState(false);
+  const [selected, setSelected]   = useState<Correlation|null>(null);
+  const [filter, setFilter]       = useState<"all"|"critical"|"high"|"both">("all");
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    const fetchData = async () => {
+      if (paused) return;
+      try {
+        const [s, c] = await Promise.all([
+          fetch("http://localhost:8000/api/network/correlations/stats").then(r=>r.json()),
+          fetch("http://localhost:8000/api/network/correlations?limit=20").then(r=>r.json()),
+        ]);
+        setStats(s);
+        setItems(c.correlations || []);
+        setLoading(false);
+      } catch { setLoading(false); }
+    };
+    fetchData();
+    timer = setInterval(fetchData, 3000);
+    return () => clearInterval(timer);
+  }, [paused]);
+
+  const filtered = items.filter(c => {
+    if (filter === "critical") return c.severity === "Critical";
+    if (filter === "high")     return c.severity === "High" || c.severity === "Critical";
+    if (filter === "both")     return c.shieldnet_matches > 0 && c.deepdefend_matches > 0;
+    return true;
+  });
+
+  const sevColor = (s: string) => ({
+    Critical: "#ff006e", High: "#f59e0b", Medium: "#fbbf24", Low: "#00d4ff", Info: "#94a3b8"
+  }[s] || "#94a3b8");
+
+  const catBadge = (cat: string) => {
+    if (cat === "CONFIRMED THREAT") return { bg: "rgba(255,0,110,0.15)", color: "#ff006e", border: "rgba(255,0,110,0.4)" };
+    if (cat === "SIGNATURE MATCH")  return { bg: "rgba(245,158,11,0.15)", color: "#f59e0b", border: "rgba(245,158,11,0.4)" };
+    if (cat === "AI ANOMALY")       return { bg: "rgba(0,212,255,0.15)",  color: "#00d4ff", border: "rgba(0,212,255,0.4)" };
+    return { bg: "rgba(148,163,184,0.15)", color: "#94a3b8", border: "rgba(148,163,184,0.4)" };
+  };
+
+  return (
+    <div className="rounded" style={{ background: "rgba(10,15,30,0.95)", border: "1px solid rgba(0,212,255,0.2)" }}>
+      {/* Header */}
+      <div className="px-5 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid rgba(0,212,255,0.1)" }}>
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Activity size={16} className="text-cyan-400" />
+            <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+          </div>
+          <div>
+            <h2 className="text-[13px] font-bold text-cyan-400 tracking-widest" style={{ fontFamily: "'Orbitron', monospace" }}>
+              LIVE THREAT CORRELATIONS
+            </h2>
+            <p className="text-[10px] font-mono text-slate-500">Hybrid IDPS decisions — ShieldNet + DeepDefend</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Filter buttons */}
+          <div className="flex gap-1">
+            {[
+              {k:"all",      label:"All"},
+              {k:"critical", label:"Critical"},
+              {k:"high",     label:"High+"},
+              {k:"both",     label:"Both Engines"},
+            ].map(f => (
+              <button key={f.k}
+                onClick={() => setFilter(f.k as any)}
+                className={`px-2.5 py-1 text-[10px] font-mono rounded transition-colors ${filter===f.k?"text-cyan-400":"text-slate-500 hover:text-slate-300"}`}
+                style={{ border: `1px solid ${filter===f.k?"rgba(0,212,255,0.4)":"rgba(148,163,184,0.15)"}`,
+                         background: filter===f.k?"rgba(0,212,255,0.08)":"transparent" }}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setPaused(!paused)}
+            className="px-2.5 py-1 text-[10px] font-mono rounded transition-colors"
+            style={{ border:"1px solid rgba(0,212,255,0.2)", color: paused?"#f59e0b":"#94a3b8" }}>
+            {paused ? "▶ RESUME" : "⏸ PAUSE"}
+          </button>
+        </div>
+      </div>
+
+      {/* Stats strip */}
+      {stats && (
+        <div className="grid grid-cols-6 gap-2 px-5 py-3" style={{ borderBottom: "1px solid rgba(0,212,255,0.05)" }}>
+          {[
+            { label: "Total", value: stats.total_correlations, color: "#00d4ff" },
+            { label: "Both Engines", value: stats.both_engines_match, color: "#ff006e", glow: stats.both_engines_match > 0 },
+            { label: "Signature", value: stats.shieldnet_only, color: "#f59e0b" },
+            { label: "AI Anomaly", value: stats.deepdefend_only, color: "#00d4ff" },
+            { label: "FP Filtered", value: stats.false_positives_filtered, color: "#94a3b8" },
+            { label: "Blocked IPs", value: stats.blocked_ip_count, color: "#00ff9f" },
+          ].map(s => (
+            <div key={s.label} className="text-center px-2 py-1.5 rounded"
+              style={{
+                background: s.glow ? "rgba(255,0,110,0.06)" : "rgba(0,212,255,0.02)",
+                border: `1px solid ${s.glow ? "rgba(255,0,110,0.3)" : "rgba(148,163,184,0.1)"}`,
+              }}>
+              <div className="text-[18px] font-bold tracking-wider" style={{ color: s.color, fontFamily: "'Orbitron', monospace",
+                textShadow: s.glow ? `0 0 8px ${s.color}` : "none" }}>
+                {s.value.toLocaleString()}
+              </div>
+              <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase mt-0.5">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Threats list */}
+      <div className="px-5 py-3">
+        {loading && <div className="text-center text-[11px] font-mono text-slate-500 py-8">Loading correlations...</div>}
+        {!loading && filtered.length === 0 && (
+          <div className="text-center text-[11px] font-mono text-slate-500 py-8">
+            <Shield size={24} className="mx-auto mb-2 opacity-30"/>
+            No correlated threats matching filter
+          </div>
+        )}
+        <div className="space-y-1.5 max-h-[400px] overflow-y-auto pr-1" style={{ scrollbarWidth: "thin" }}>
+          {filtered.map((c, i) => {
+            const badge = catBadge(c.category);
+            return (
+              <div key={i} onClick={() => setSelected(c)}
+                className="flex items-center gap-3 px-3 py-2.5 rounded cursor-pointer transition-all hover:bg-cyan-400/5"
+                style={{ background: "rgba(3,7,18,0.6)", border: "1px solid rgba(148,163,184,0.06)" }}>
+                {/* Severity dot */}
+                <div className="flex-shrink-0">
+                  <div className="w-2 h-2 rounded-full animate-pulse"
+                    style={{ background: sevColor(c.severity), boxShadow: `0 0 6px ${sevColor(c.severity)}` }} />
+                </div>
+                {/* Category badge */}
+                <div className="px-2 py-0.5 rounded text-[9px] font-mono tracking-wider flex-shrink-0 w-32 text-center"
+                  style={{ background: badge.bg, color: badge.color, border: `1px solid ${badge.border}` }}>
+                  {c.category}
+                </div>
+                {/* Source IP */}
+                <div className="text-[11px] font-mono text-slate-300 w-32 flex-shrink-0">
+                  {c.src_ip}
+                </div>
+                {/* Engine indicators */}
+                <div className="flex items-center gap-2 text-[9px] font-mono w-24 flex-shrink-0">
+                  <span className={c.shieldnet_matches>0?"text-orange-400":"text-slate-700"}>
+                    SN:{c.shieldnet_matches}
+                  </span>
+                  <span className={c.deepdefend_matches>0?"text-cyan-400":"text-slate-700"}>
+                    AI:{c.deepdefend_matches}
+                  </span>
+                </div>
+                {/* Severity + confidence */}
+                <div className="flex-shrink-0 text-[10px] font-mono" style={{ color: sevColor(c.severity) }}>
+                  {c.severity}
+                </div>
+                <div className="flex-shrink-0 text-[10px] font-mono text-slate-500 w-12 text-right">
+                  {c.confidence.toFixed(0)}%
+                </div>
+                {/* Reason */}
+                <div className="flex-1 text-[10px] font-mono text-slate-400 truncate">{c.reason}</div>
+                {/* Action */}
+                <div className="flex-shrink-0 px-2 py-0.5 rounded text-[9px] font-mono tracking-wider"
+                  style={{
+                    background: c.recommended === "BLOCK" ? "rgba(255,0,110,0.1)" : "rgba(245,158,11,0.1)",
+                    color:      c.recommended === "BLOCK" ? "#ff006e" : "#f59e0b",
+                    border:     `1px solid ${c.recommended === "BLOCK" ? "rgba(255,0,110,0.3)" : "rgba(245,158,11,0.3)"}`,
+                  }}>
+                  {c.recommended}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Detail modal */}
+      {selected && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
+          onClick={() => setSelected(null)}>
+          <div className="w-full max-w-2xl p-6 rounded-lg" onClick={(e) => e.stopPropagation()}
+            style={{ background: "rgba(10,15,30,0.98)", border: "1px solid rgba(0,212,255,0.3)" }}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-bold text-cyan-400 tracking-widest" style={{ fontFamily: "'Orbitron', monospace" }}>
+                THREAT CORRELATION DETAIL
+              </h3>
+              <button onClick={() => setSelected(null)} className="text-slate-500 hover:text-cyan-400">✕</button>
+            </div>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase">Source IP</div>
+                  <div className="text-[14px] font-mono text-slate-200">{selected.src_ip}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase">Category</div>
+                  <div className="text-[14px] font-mono" style={{ color: catBadge(selected.category).color }}>
+                    {selected.category}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase">Severity</div>
+                  <div className="text-[14px] font-mono" style={{ color: sevColor(selected.severity) }}>
+                    {selected.severity}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase">Confidence</div>
+                  <div className="text-[14px] font-mono text-slate-200">{selected.confidence.toFixed(2)}%</div>
+                </div>
+              </div>
+              <div>
+                <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase mb-1">Reason</div>
+                <div className="text-[12px] font-mono text-slate-300 p-2 rounded"
+                  style={{ background: "rgba(3,7,18,0.6)", border: "1px solid rgba(148,163,184,0.1)" }}>
+                  {selected.reason}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase mb-1">
+                    ShieldNet Matches ({selected.shieldnet_matches})
+                  </div>
+                  <div className="text-[10px] font-mono text-orange-400 p-2 rounded min-h-[60px]"
+                    style={{ background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.15)" }}>
+                    {selected.engines.shieldnet.length > 0
+                      ? selected.engines.shieldnet.join(", ")
+                      : <span className="text-slate-600">No signature rules matched</span>}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase mb-1">
+                    DeepDefend AI ({selected.deepdefend_matches})
+                  </div>
+                  <div className="text-[10px] font-mono text-cyan-400 p-2 rounded min-h-[60px] space-y-0.5"
+                    style={{ background: "rgba(0,212,255,0.05)", border: "1px solid rgba(0,212,255,0.15)" }}>
+                    {selected.engines.deepdefend.length > 0
+                      ? selected.engines.deepdefend.map((d, i) => (
+                          <div key={i}>• {d.class} <span className="text-slate-500">({d.conf.toFixed(1)}%)</span></div>
+                        ))
+                      : <span className="text-slate-600">No AI detections</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between pt-2">
+                <div className="text-[10px] font-mono text-slate-500">
+                  Recommended action:&nbsp;
+                  <span style={{ color: selected.recommended === "BLOCK" ? "#ff006e" : "#f59e0b" }}>
+                    {selected.recommended}
+                  </span>
+                </div>
+                <div className="text-[10px] font-mono text-slate-600">
+                  {new Date(selected.timestamp).toLocaleString()}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 export default function DashboardPage() {
   const [active, setActive]         = useState("Dashboard");
   const [refreshing, setRefreshing] = useState(false);
@@ -592,6 +885,7 @@ export default function DashboardPage() {
 
         {/* 1 ── Stat Cards */}
         <StatCardsSection data={statsData} />
+        <LiveCorrelations />
 
         {/* 2 ── Detection Summary + Alert Trends */}
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">

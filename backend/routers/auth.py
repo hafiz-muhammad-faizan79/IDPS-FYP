@@ -35,8 +35,10 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == body.username).first()
     if not user or not verify_password(body.password, user.password):
         raise HTTPException(401, "Invalid username or password")
+    if hasattr(user, "verified") and user.verified is False:
+        raise HTTPException(403, "Email not verified — please check your inbox and click the verification link")
     if not user.is_active:
-        raise HTTPException(403, "Account is deactivated")
+        raise HTTPException(403, "Account is deactivated. Please contact your administrator.")
 
     # Update last login
     user.last_login = datetime.utcnow()
@@ -227,3 +229,230 @@ def reset_password(
     user.password = hash_password(body.get("new_password", "changeme123"))
     db.commit()
     return {"success": True, "message": f"Password reset for {user.username}"}
+
+
+
+# ══════════════════════════════════════════════════════════════
+# PUBLIC SIGNUP — creates new user with analyst role
+# ══════════════════════════════════════════════════════════════
+@router.post("/signup")
+def public_signup(body: dict, db: Session = Depends(get_db)):
+    """Public signup — analyst role, requires email verification."""
+    import secrets
+    from email_service import send_verification_email
+
+    username  = (body.get("username")  or "").strip()
+    password  = body.get("password") or ""
+    email     = (body.get("email")     or "").strip().lower()
+    full_name = (body.get("full_name") or "").strip()
+    phone     = (body.get("phone")     or "").strip()
+
+    # ── Validation ────────────────────────────────────────────
+    if not username or not password or not email or not full_name or not phone:
+        raise HTTPException(400, "All fields are required")
+    if len(password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if len(username) < 3:
+        raise HTTPException(400, "Username must be at least 3 characters")
+    if "@" not in email or "." not in email:
+        raise HTTPException(400, "Invalid email format")
+    if len(phone) < 7:
+        raise HTTPException(400, "Invalid phone number")
+
+    # ── Duplicate check ───────────────────────────────────────
+    if db.query(User).filter(User.username == username).first():
+        raise HTTPException(409, "Username already taken")
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(409, "Email already registered")
+
+    # ── Generate ID + verification token ──────────────────────
+    last_user = db.query(User).order_by(User.id.desc()).first()
+    if last_user and last_user.id.startswith("USR-"):
+        try:
+            next_num = int(last_user.id.split("-")[1]) + 1
+        except Exception:
+            next_num = 1
+    else:
+        next_num = 1
+    new_id = f"USR-{next_num:03d}"
+
+    token = secrets.token_urlsafe(48)
+    initials = "".join([p[0].upper() for p in full_name.split()[:2]]) or username[:2].upper()
+
+    new_user = User(
+        id                 = new_id,
+        name               = full_name,
+        username           = username,
+        email              = email,
+        phone              = phone,
+        password           = hash_password(password),
+        role               = "analyst",
+        avatar             = initials[:5],
+        is_active          = False,    # inactive until verified
+        verified           = False,
+        verification_token = token,
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    # ── Send verification email (async) ──────────────────────
+    send_verification_email(email, full_name or username, token)
+
+    print(f"[AUTH] New signup pending verification: {username} ({email})")
+
+    return {
+        "success":  True,
+        "message":  "Account created! Please check your email to verify your account.",
+        "username": username,
+        "email":    email,
+    }
+
+
+@router.get("/verify-email")
+def verify_email(token: str, db: Session = Depends(get_db)):
+    """Email verification endpoint — clicked from email link."""
+    from fastapi.responses import HTMLResponse
+    from email_service import send_welcome_email
+    import os
+
+    frontend = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    user = db.query(User).filter(User.verification_token == token).first()
+
+    if not user:
+        return HTMLResponse(f"""
+        <html><head><title>CyGuardian-X — Verification</title></head>
+        <body style="font-family:sans-serif; background:#030712; color:#fff; text-align:center; padding-top:80px;">
+            <h1 style="color:#ff006e;">✗ Invalid verification link</h1>
+            <p>This link is either expired or already used.</p>
+            <a href="{frontend}/login" style="color:#00d4ff;">Go to Login</a>
+        </body></html>
+        """, status_code=400)
+
+    if user.verified:
+        return HTMLResponse(f"""
+        <html><head><title>CyGuardian-X — Already Verified</title></head>
+        <body style="font-family:sans-serif; background:#030712; color:#fff; text-align:center; padding-top:80px;">
+            <h1 style="color:#00d4ff;">Already Verified</h1>
+            <p>Your account is already active. You can log in normally.</p>
+            <a href="{frontend}/login" style="color:#00d4ff;">Go to Login</a>
+        </body></html>
+        """)
+
+    # ── Mark as verified ──────────────────────────────────────
+    user.verified           = True
+    user.is_active          = True
+    user.verification_token = None
+    db.commit()
+
+    send_welcome_email(user.email, user.name or user.username)
+    print(f"[AUTH] Email verified: {user.username}")
+
+    return HTMLResponse(f"""
+    <html><head><title>CyGuardian-X — Verified</title></head>
+    <body style="font-family:sans-serif; background:#030712; color:#fff; text-align:center; padding-top:80px;">
+        <div style="max-width:480px; margin:0 auto; padding:40px; background:rgba(10,15,30,0.95); border:1px solid #00d4ff; border-radius:8px;">
+            <h1 style="color:#00d4ff;">✓ Email Verified!</h1>
+            <p style="color:#94a3b8;">Welcome to CyGuardian-X, {user.name or user.username}.</p>
+            <p style="color:#94a3b8;">Your account is now active.</p>
+            <a href="{frontend}/login" style="display:inline-block; background:#00d4ff; color:#030712; padding:14px 32px; text-decoration:none; border-radius:6px; font-weight:bold; margin-top:24px;">GO TO LOGIN</a>
+        </div>
+    </body></html>
+    """)
+
+
+# ══════════════════════════════════════════════════════════════
+# FORGOT PASSWORD FLOW
+# ══════════════════════════════════════════════════════════════
+@router.post("/forgot-password")
+def forgot_password(body: dict, db: Session = Depends(get_db)):
+    """Request password reset link via email."""
+    import secrets
+    from datetime import datetime, timedelta
+    from email_service import send_async, BASE_STYLE, FRONTEND_URL
+
+    email = (body.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Please provide a valid email address")
+
+    user = db.query(User).filter(User.email == email).first()
+
+    # Always return success (don't leak which emails exist — security best practice)
+    if not user:
+        print(f"[AUTH] Password reset requested for non-existent: {email}")
+        return {"success": True, "message": "If an account exists with that email, a reset link has been sent."}
+
+    # Generate token + 1 hour expiry
+    token  = secrets.token_urlsafe(48)
+    expiry = datetime.utcnow() + timedelta(hours=1)
+
+    user.reset_token        = token
+    user.reset_token_expiry = expiry
+    db.commit()
+
+    # Build reset URL pointing to frontend
+    reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">{BASE_STYLE}</head><body>
+<div class="wrap"><div class="card">
+    <div class="logo">CyGuardian-X</div>
+    <div class="subtitle">PASSWORD RESET REQUEST</div>
+    <h2>Hi {user.name or user.username},</h2>
+    <p>We received a request to reset the password for your CyGuardian-X account.</p>
+    <p>Click the button below to set a new password. This link expires in <strong style="color:#00d4ff;">1 hour</strong>.</p>
+    <p style="text-align:center; margin:32px 0;">
+        <a href="{reset_url}" class="btn">RESET PASSWORD</a>
+    </p>
+    <p style="color:#94a3b8; font-size:13px;">
+        Or paste this link:<br>
+        <a href="{reset_url}" style="word-break:break-all;">{reset_url}</a>
+    </p>
+    <p style="color:#94a3b8; font-size:13px;">
+        If you didn't request this, ignore this email — your password won't change.
+    </p>
+    <div class="footer">
+        CyGuardian-X • Automated security message — do not reply
+    </div>
+</div></div>
+</body></html>"""
+
+    send_async(user.email, "Reset your CyGuardian-X password", html)
+    print(f"[AUTH] Password reset sent: {user.username} ({email})")
+
+    return {"success": True, "message": "If an account exists with that email, a reset link has been sent."}
+
+
+@router.post("/reset-password")
+def reset_password(body: dict, db: Session = Depends(get_db)):
+    """Reset password using token from email."""
+    from datetime import datetime
+
+    token        = (body.get("token") or "").strip()
+    new_password = body.get("password") or ""
+
+    if not token or not new_password:
+        raise HTTPException(400, "Token and password are required")
+    if len(new_password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if not any(c.isupper() for c in new_password):
+        raise HTTPException(400, "Password must contain at least one uppercase letter")
+    if not any(c.isdigit() for c in new_password):
+        raise HTTPException(400, "Password must contain at least one number")
+
+    user = db.query(User).filter(User.reset_token == token).first()
+    if not user:
+        raise HTTPException(400, "Invalid or expired reset link")
+
+    # Check expiry
+    if user.reset_token_expiry and user.reset_token_expiry.replace(tzinfo=None) < datetime.utcnow():
+        raise HTTPException(400, "Reset link has expired. Please request a new one.")
+
+    # Update password
+    user.password           = hash_password(new_password)
+    user.reset_token        = None
+    user.reset_token_expiry = None
+    db.commit()
+
+    print(f"[AUTH] Password reset successful: {user.username}")
+    return {"success": True, "message": "Password reset successfully. You can now log in."}

@@ -178,6 +178,18 @@ export default function LoginPage() {
   const [initProgress, setInitProgress] = useState(0);
   const [initDone, setInitDone] = useState(false);
   const [currentTime, setCurrentTime] = useState("");
+  const [mode, setMode]                 = useState<"login"|"signup">("login");
+  const [email, setEmail]               = useState("");
+  const [confirmPass, setConfirmPass]   = useState("");
+
+  // Forgot password modal
+  const [showForgot, setShowForgot]   = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotMsg, setForgotMsg]     = useState("");
+  const [fullName, setFullName]         = useState("");
+  const [phone, setPhone]               = useState("");
+  const [success, setSuccess]           = useState("");
 
   // Boot sequence
   useEffect(() => {
@@ -213,6 +225,41 @@ export default function LoginPage() {
   setError("");
   setLoading(true);
   try {
+    // ── SIGNUP MODE ──
+    if (mode === "signup") {
+      if (password !== confirmPass) {
+        setError("Passwords do not match.");
+        setLoading(false);
+        return;
+      }
+      if (password.length < 6) {
+        setError("Password must be at least 6 characters.");
+        setLoading(false);
+        return;
+      }
+      const signupRes = await fetch("http://localhost:8000/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password, email, full_name: fullName, phone }),
+      });
+      const signupData = await signupRes.json();
+      if (!signupRes.ok) {
+        setError(signupData.detail || "Signup failed");
+        setLoading(false);
+        return;
+      }
+      setSuccess("Account created! Switching to login...");
+      setTimeout(() => {
+        setMode("login");
+        setSuccess("");
+        setPassword("");
+        setConfirmPass("");
+        setEmail("");
+      }, 1500);
+      setLoading(false);
+      return;
+    }
+    // ── LOGIN MODE ──
     const res = await fetch("http://localhost:8000/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -440,6 +487,60 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {/* Full Name — signup only */}
+            {mode === "signup" && (
+              <div className="animate-slide-up" style={{ animationDelay: "320ms", animationFillMode: "forwards", opacity: 0 }}>
+                <label className="block text-[10px] font-mono text-slate-500 tracking-widest uppercase mb-1.5">
+                  Full Name
+                </label>
+                <div className="relative">
+                  <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 opacity-60" />
+                  <input
+                    type="text"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="John Doe"
+                    className="cyber-input w-full pl-9 pr-4 py-3 rounded text-sm"
+                  />
+                </div>
+              </div>
+            )}
+            {/* Email — signup only */}
+            {mode === "signup" && (
+              <div className="animate-slide-up" style={{ animationDelay: "340ms", animationFillMode: "forwards", opacity: 0 }}>
+                <label className="block text-[10px] font-mono text-slate-500 tracking-widest uppercase mb-1.5">
+                  Email
+                </label>
+                <div className="relative">
+                  <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 opacity-60" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className="cyber-input w-full pl-9 pr-4 py-3 rounded text-sm"
+                  />
+                </div>
+              </div>
+            )}
+            {/* Phone — signup only */}
+            {mode === "signup" && (
+              <div className="animate-slide-up" style={{ animationDelay: "360ms", animationFillMode: "forwards", opacity: 0 }}>
+                <label className="block text-[10px] font-mono text-slate-500 tracking-widest uppercase mb-1.5">
+                  Phone
+                </label>
+                <div className="relative">
+                  <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 opacity-60" />
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+92 300 1234567"
+                    className="cyber-input w-full pl-9 pr-4 py-3 rounded text-sm"
+                  />
+                </div>
+              </div>
+            )}
             {/* Password */}
             <div className="animate-slide-up" style={{ animationDelay: "380ms", animationFillMode: "forwards", opacity: 0 }}>
               <label className="block text-[10px] font-mono text-slate-500 tracking-widest uppercase mb-1.5">
@@ -464,6 +565,27 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {/* Confirm Password — signup only */}
+            {mode === "signup" && (
+              <div className="animate-slide-up" style={{ animationDelay: "420ms", animationFillMode: "forwards", opacity: 0 }}>
+                <label className="block text-[10px] font-mono text-slate-500 tracking-widest uppercase mb-1.5">
+                  Confirm Password
+                </label>
+                <div className="relative">
+                  <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 opacity-60" />
+                  <input
+                    type={showPass ? "text" : "password"}
+                    value={confirmPass}
+                    onChange={(e) => setConfirmPass(e.target.value)}
+                    placeholder="••••••••••••"
+                    className="cyber-input w-full pl-9 pr-4 py-3 rounded text-sm"
+                  />
+                </div>
+                {confirmPass && password !== confirmPass && (
+                  <p className="text-[9px] font-mono mt-1 text-red-400">Passwords do not match</p>
+                )}
+              </div>
+            )}
             {/* Error */}
             {error && (
               <div className="flex items-center gap-2 px-3 py-2 rounded text-[11px] font-mono text-red-400"
@@ -485,15 +607,34 @@ export default function LoginPage() {
                   AUTHENTICATING...
                 </span>
               ) : (
-                <span className="relative z-10">INITIATE SECURE SESSION</span>
+                <span className="relative z-10">{mode === "login" ? "INITIATE SECURE SESSION" : "CREATE ANALYST ACCOUNT"}</span>
               )}
             </button>
 
-            {/* Demo hint */}
+            {/* Success message */}
+            {success && (
+              <div className="text-center py-2 px-3 rounded text-[11px] font-mono"
+                style={{ background:"rgba(0,255,159,0.1)", color:"#00ff9f", border:"1px solid rgba(0,255,159,0.3)" }}>
+                ✓ {success}
+              </div>
+            )}
+            {/* Login/Signup toggle */}
             <div className="text-center animate-slide-up"
               style={{ animationDelay: "520ms", animationFillMode: "forwards", opacity: 0 }}>
-              <p className="text-[10px] font-mono text-slate-600">
-                Demo: <span className="text-slate-500">admin</span> / <span className="text-slate-500">admin123</span>
+              <p className="text-[10px] font-mono text-slate-500">
+                {mode === "login" ? "No account?" : "Already have an account?"}{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode(mode === "login" ? "signup" : "login");
+                    setError("");
+                    setSuccess("");
+                    setPassword("");
+                    setConfirmPass("");
+                  }}
+                  className="text-cyan-400 hover:text-cyan-300 transition-colors underline tracking-wider">
+                  {mode === "login" ? "SIGN UP FOR FREE" : "BACK TO LOGIN"}
+                </button>
               </p>
             </div>
           </form>
@@ -501,7 +642,7 @@ export default function LoginPage() {
           {/* Footer links */}
           <div className="mt-8 pt-6 border-t border-slate-800 flex justify-between text-[10px] font-mono text-slate-600 animate-slide-up"
             style={{ animationDelay: "580ms", animationFillMode: "forwards", opacity: 0 }}>
-            <span className="hover:text-cyan-400 cursor-pointer transition-colors">Forgot credentials?</span>
+            <button type="button" onClick={() => { setShowForgot(true); setForgotMsg(""); setForgotEmail(""); }} className="hover:text-cyan-400 cursor-pointer transition-colors">Forgot credentials?</button>
             <span className="hover:text-cyan-400 cursor-pointer transition-colors">Contact SOC Admin</span>
           </div>
 
@@ -511,6 +652,67 @@ export default function LoginPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Forgot Password Modal ─────────────────── */}
+      {showForgot && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
+          onClick={() => setShowForgot(false)}>
+          <div className="w-full max-w-md p-6 rounded-lg" onClick={(e) => e.stopPropagation()}
+            style={{ background: "rgba(10,15,30,0.98)", border: "1px solid rgba(0,212,255,0.3)", boxShadow: "0 0 60px rgba(0,212,255,0.15)" }}>
+            <div className="text-center mb-4">
+              <Shield size={32} className="mx-auto text-cyan-400 mb-2" />
+              <h2 className="text-xl font-bold text-cyan-400 tracking-widest" style={{ fontFamily: "'Orbitron', monospace" }}>Reset Password</h2>
+              <p className="text-[11px] text-slate-500 font-mono mt-1">Enter your email to receive a reset link</p>
+            </div>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (!forgotEmail || !forgotEmail.includes("@")) {
+                setForgotMsg("Please enter a valid email address");
+                return;
+              }
+              setForgotLoading(true);
+              setForgotMsg("");
+              try {
+                const res = await fetch("http://localhost:8000/api/auth/forgot-password", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ email: forgotEmail }),
+                });
+                const data = await res.json();
+                setForgotMsg(data.message || "Reset link sent if account exists");
+              } catch {
+                setForgotMsg("Connection failed");
+              }
+              setForgotLoading(false);
+            }} className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-mono text-slate-500 tracking-widest uppercase mb-1.5">Email Address</label>
+                <div className="relative">
+                  <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 opacity-60" />
+                  <input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)}
+                    placeholder="you@example.com" autoFocus
+                    className="cyber-input w-full pl-9 pr-4 py-2.5 rounded text-sm" />
+                </div>
+              </div>
+              {forgotMsg && (
+                <div className="px-3 py-2 rounded text-[11px] font-mono text-center"
+                  style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: "#00d4ff" }}>
+                  {forgotMsg}
+                </div>
+              )}
+              <button type="submit" disabled={forgotLoading}
+                className="cyber-btn w-full py-2.5 rounded text-sm font-bold tracking-widest disabled:opacity-50">
+                {forgotLoading ? "SENDING..." : "SEND RESET LINK"}
+              </button>
+              <button type="button" onClick={() => setShowForgot(false)}
+                className="w-full text-[11px] font-mono text-slate-500 hover:text-slate-400 transition-colors">
+                CANCEL
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

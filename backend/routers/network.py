@@ -603,3 +603,85 @@ def switch_interface(
         "message": f"Switched from {old_iface} to {new_iface}",
         "interface": new_iface,
     }
+
+
+# ══════════════════════════════════════════════════════════════
+# DEEPDEFEND AI — predictions and stats
+# ══════════════════════════════════════════════════════════════
+@router.get("/ai/predictions")
+def get_ai_predictions(limit: int = 20):
+    """Return recent AI threat predictions."""
+    try:
+        from deepdefend_engine import get_recent_predictions
+        preds = get_recent_predictions(limit)
+        return {"total": len(preds), "predictions": preds}
+    except Exception as e:
+        return {"total": 0, "predictions": [], "error": str(e)}
+
+
+@router.get("/ai/stats")
+def get_ai_stats():
+    """Return per-class detection counts."""
+    try:
+        from deepdefend_engine import get_stats
+        return {"stats": get_stats()}
+    except Exception as e:
+        return {"stats": {}, "error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════
+# CORRELATION ENGINE — combined threat decisions
+# ══════════════════════════════════════════════════════════════
+@router.get("/correlations")
+def get_correlations_endpoint(limit: int = 20):
+    """Return recent correlated threat decisions."""
+    try:
+        from correlation_engine import get_correlations
+        corrs = get_correlations(limit)
+        return {"total": len(corrs), "correlations": corrs}
+    except Exception as e:
+        return {"total": 0, "correlations": [], "error": str(e)}
+
+
+@router.get("/correlations/stats")
+def get_correlation_stats_endpoint():
+    """Return correlation engine statistics."""
+    try:
+        from correlation_engine import get_correlation_stats
+        return get_correlation_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════
+# ATTACK SIMULATOR — admin only
+# ══════════════════════════════════════════════════════════════
+@router.post("/simulate-attack")
+def trigger_attack_simulation(
+    body: dict,
+    current_user=Depends(get_current_user),
+):
+    """Trigger simulated attack traffic — admin only."""
+    if current_user.role != "admin":
+        raise HTTPException(403, "Admin only")
+
+    attack_type = body.get("type", "all")
+    try:
+        from attack_simulator import run_async, get_status
+        result = run_async(attack_type)
+        return {
+            "success":     True,
+            "message":     f"Attack simulation started: {attack_type}",
+            "status":      get_status(),
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Simulation failed: {e}")
+
+
+@router.get("/simulate-attack/status")
+def get_simulation_status():
+    try:
+        from attack_simulator import get_status
+        return get_status()
+    except Exception as e:
+        return {"error": str(e)}
