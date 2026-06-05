@@ -5,8 +5,8 @@ main.py — CyGuardian-X IDPS Backend v2.0
 ROOT CAUSE OF 403 ON WEBSOCKET:
   Starlette's CORSMiddleware intercepts WebSocket upgrade requests and
   rejects them with 403 if the Origin header doesn't exactly match
-  allow_origins. Even with allow_origins=["http://localhost:3000"],
-  the browser may send origin as "http://localhost:3000" but Starlette's
+  allow_origins. Even with allow_origins=["cyguardianx.vercel.app"],
+  the browser may send origin as "cyguardianx.vercel.app" but Starlette's
   internal check fails for WebSocket upgrades specifically.
 
 FIX:

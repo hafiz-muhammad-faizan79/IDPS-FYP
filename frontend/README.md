@@ -20,7 +20,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) — it redirects to `/login`.
+Open [cyguardianx.vercel.app](cyguardianx.vercel.app) — it redirects to `/login`.
 
 ### 3. Demo Login Credentials
 ```

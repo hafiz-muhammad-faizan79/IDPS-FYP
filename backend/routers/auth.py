@@ -316,7 +316,7 @@ def verify_email(token: str, db: Session = Depends(get_db)):
     from email_service import send_welcome_email
     import os
 
-    frontend = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    frontend = os.getenv("FRONTEND_URL", "cyguardianx.vercel.app")
     user = db.query(User).filter(User.verification_token == token).first()
 
     if not user:
