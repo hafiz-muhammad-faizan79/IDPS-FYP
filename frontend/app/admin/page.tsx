@@ -7,7 +7,7 @@ import {
   UserCheck, UserX, ChevronDown,
 } from "lucide-react";
 
-const API_AUTH = "http://localhost:8000/api/auth";
+const API_AUTH = "fyp-backend-production-944f.up.railway.app/api/auth";
 
 function getToken() {
   if (typeof window === "undefined") return null;

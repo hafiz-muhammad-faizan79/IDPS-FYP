@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Bell, X, AlertTriangle, ShieldAlert, Activity, Check } from "lucide-react";
 
-const API = "http://localhost:8000";
+const API = "fyp-backend-production-944f.up.railway.app";
 
 type Notification = {
   id: number;

@@ -15,7 +15,7 @@ import {
 // ══════════════════════════════════════════════
 // CONFIG
 // ══════════════════════════════════════════════
-const API = "http://localhost:8000/api/configuration";
+const API = "fyp-backend-production-944f.up.railway.app/api/configuration";
 
 async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T | null> {
   try {

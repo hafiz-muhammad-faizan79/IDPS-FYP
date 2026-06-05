@@ -16,7 +16,7 @@ import {
 // ══════════════════════════════════════════════════════════════
 // CONFIG
 // ══════════════════════════════════════════════════════════════
-const API_HTTP = "http://localhost:8000";
+const API_HTTP = "fyp-backend-production-944f.up.railway.app";
 const API_WS   = "ws://localhost:8000/api/network/ws";
 
 // ══════════════════════════════════════════════════════════════
@@ -697,7 +697,7 @@ function PacketTable() {
 
   // Initial load from DB
   useEffect(() => {
-    fetch("http://localhost:8000/api/network/packets?limit=50")
+    fetch("fyp-backend-production-944f.up.railway.app/api/network/packets?limit=50")
       .then(r => r.json())
       .then(d => {
         if (d?.packets) setPackets(d.packets);
@@ -711,7 +711,7 @@ function PacketTable() {
     const interval = setInterval(async () => {
       if (pausedRef.current) return;
       try {
-        const res  = await fetch("http://localhost:8000/api/network/packets?limit=10");
+        const res  = await fetch("fyp-backend-production-944f.up.railway.app/api/network/packets?limit=10");
         const data = await res.json();
         if (!data?.packets?.length) return;
         setPackets(prev => {

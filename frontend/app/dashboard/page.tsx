@@ -15,7 +15,7 @@ import {
 // ════════════════════════════════════════════════════════════════
 // API BASE URL — change this if your backend port is different
 // ════════════════════════════════════════════════════════════════
-const API = "http://localhost:8000";
+const API = "fyp-backend-production-944f.up.railway.app";
 
 // ════════════════════════════════════════════════════════════════
 // TYPES matching backend responses
@@ -556,8 +556,8 @@ function LiveCorrelations() {
       if (paused) return;
       try {
         const [s, c] = await Promise.all([
-          fetch("http://localhost:8000/api/network/correlations/stats").then(r=>r.json()),
-          fetch("http://localhost:8000/api/network/correlations?limit=20").then(r=>r.json()),
+          fetch("fyp-backend-production-944f.up.railway.app/api/network/correlations/stats").then(r=>r.json()),
+          fetch("fyp-backend-production-944f.up.railway.app/api/network/correlations?limit=20").then(r=>r.json()),
         ]);
         setStats(s);
         setItems(c.correlations || []);

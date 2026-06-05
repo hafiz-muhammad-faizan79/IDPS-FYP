@@ -8,7 +8,7 @@ import {
   Zap, Pause, Brain, Cpu, Network, Menu, X,
 } from "lucide-react";
 
-const API = "http://localhost:8000";
+const API = "fyp-backend-production-944f.up.railway.app";
 
 // ── Types ─────────────────────────────────────────────────
 type AgentStatus = {
