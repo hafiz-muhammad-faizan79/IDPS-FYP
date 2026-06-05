@@ -20,7 +20,7 @@ SMTP_PORT    = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER    = os.getenv("SMTP_USER", "")
 SMTP_PASS    = os.getenv("SMTP_PASSWORD", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-BACKEND_URL  = os.getenv("BACKEND_URL",  "fyp-backend-production-944f.up.railway.app")
+BACKEND_URL  = os.getenv("BACKEND_URL",  "https://fyp-backend-production-944f.up.railway.app")
 
 
 def _send_smtp(to_email: str, subject: str, html_body: str, text_body: str = ""):

@@ -14,7 +14,7 @@ import {
 // ══════════════════════════════════════════════
 // CONFIG
 // ══════════════════════════════════════════════
-const API = "fyp-backend-production-944f.up.railway.app/api/audits";
+const API = "https://fyp-backend-production-944f.up.railway.app/api/audits";
 
 async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T | null> {
   try {

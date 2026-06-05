@@ -237,7 +237,7 @@ export default function LoginPage() {
         setLoading(false);
         return;
       }
-      const signupRes = await fetch("fyp-backend-production-944f.up.railway.app/api/auth/signup", {
+      const signupRes = await fetch("https://fyp-backend-production-944f.up.railway.app/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password, email, full_name: fullName, phone }),
@@ -260,7 +260,7 @@ export default function LoginPage() {
       return;
     }
     // ── LOGIN MODE ──
-    const res = await fetch("fyp-backend-production-944f.up.railway.app/api/auth/login", {
+    const res = await fetch("https://fyp-backend-production-944f.up.railway.app/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
@@ -674,7 +674,7 @@ export default function LoginPage() {
               setForgotLoading(true);
               setForgotMsg("");
               try {
-                const res = await fetch("fyp-backend-production-944f.up.railway.app/api/auth/forgot-password", {
+                const res = await fetch("https://fyp-backend-production-944f.up.railway.app/api/auth/forgot-password", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ email: forgotEmail }),

@@ -44,7 +44,7 @@ function ResetPasswordContent() {
 
     setLoading(true);
     try {
-      const res = await fetch("fyp-backend-production-944f.up.railway.app/api/auth/reset-password", {
+      const res = await fetch("https://fyp-backend-production-944f.up.railway.app/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, password }),

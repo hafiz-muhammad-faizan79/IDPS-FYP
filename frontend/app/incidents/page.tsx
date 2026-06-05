@@ -13,8 +13,8 @@ import {
 // ══════════════════════════════════════════════
 // CONFIG
 // ══════════════════════════════════════════════
-const API_INC = "fyp-backend-production-944f.up.railway.app/api/incidents";
-const API_REP = "fyp-backend-production-944f.up.railway.app/api/reports";
+const API_INC = "https://fyp-backend-production-944f.up.railway.app/api/incidents";
+const API_REP = "https://fyp-backend-production-944f.up.railway.app/api/reports";
 
 function getToken(): string {
   return (
