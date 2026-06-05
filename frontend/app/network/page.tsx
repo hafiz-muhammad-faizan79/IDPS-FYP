@@ -1,4 +1,5 @@
 "use client";
+import NotificationBell from "../../components/NotificationBell";
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -9,6 +10,7 @@ import {
   Server, Zap, Globe, ArrowUp, ArrowDown,
   CheckCircle, Bell, Lock, ToggleLeft, ToggleRight,
   ChevronLeft, ChevronRight, WifiOff,
+  Bot,
 } from "lucide-react";
 
 // ══════════════════════════════════════════════════════════════
@@ -60,6 +62,7 @@ const NAV_LINKS = [
   { label:"Incidents",          href:"/incidents",     icon:AlertTriangle  },
   { label:"Configuration",      href:"/configuration", icon:Settings       },
   { label:"Audits",             href:"/audits",        icon:FileText       },
+  { label: "Agents", href: "/agents", icon: Bot },
 ];
 
 function Navbar({ wsConnected }:{ wsConnected:boolean }) {
@@ -105,6 +108,7 @@ function Navbar({ wsConnected }:{ wsConnected:boolean }) {
               style={{background:"rgba(0,212,255,0.2)"}}>A</div>
             <span className="text-[11px] font-mono text-slate-400 hidden sm:block">ADMIN</span>
           </div>
+          <NotificationBell />
           <a href="/logout" className="flex items-center gap-1.5 text-[10px] font-mono text-slate-600 hover:text-red-400 transition-colors">
             <LogOut size={13}/><span className="hidden sm:block">LOGOUT</span>
           </a>

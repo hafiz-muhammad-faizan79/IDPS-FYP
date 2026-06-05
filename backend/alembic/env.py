@@ -14,6 +14,8 @@ import models.incident
 import models.network
 import models.audit
 import models.user   # noqa
+import models.notification  # noqa
+import models.agent  # noqa
 
 config = context.config
 config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL"))

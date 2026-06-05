@@ -28,6 +28,8 @@ from routers.audits         import router as audits_router
 from routers.incidents      import router as incidents_router
 from routers.dashboard      import router as dashboard_router
 from routers.auth           import router as auth_router
+from routers.notifications  import router as notifications_router
+from routers.agents         import router as agents_router
 from routers                import threat_intel
 from network_monitor        import start_monitor
 from routers.reports        import router as reports_router
@@ -103,6 +105,8 @@ app.include_router(incidents_router)
 app.include_router(dashboard_router)
 app.include_router(auth_router)
 app.include_router(reports_router)
+app.include_router(notifications_router)
+app.include_router(agents_router)
 app.include_router(threat_intel.router)
 
 admin.add_view(UserAdmin)
@@ -121,7 +125,34 @@ async def on_startup():
         start_correlation_engine()
     except Exception as e:
         print(f"[STARTUP] Correlation engine failed: {e}")
+
+    # Start the multi-agent system
+    try:
+        from agents.manager import start_all_agents
+        start_all_agents()
+    except Exception as e:
+        print(f"[STARTUP] Agent system failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Warm up the local LLM in the background (non-blocking)
+    try:
+        import threading
+        from agent_reasoning import warmup
+        threading.Thread(target=warmup, daemon=True).start()
+    except Exception as e:
+        print(f"[STARTUP] LLM warmup skip: {e}")
+
     print("[STARTUP] CyGuardian-X backend ready ✓")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    try:
+        from agents.manager import stop_all_agents
+        stop_all_agents()
+    except Exception as e:
+        print(f"[SHUTDOWN] Agent stop error: {e}")
 
 
 # ════════════════════════════════════════════════════════════════

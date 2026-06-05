@@ -1,4 +1,5 @@
 "use client";
+import NotificationBell from "../../components/NotificationBell";
 
 import { useState, useEffect, useRef } from "react";
 import {
@@ -6,6 +7,7 @@ import {
   Radio, Menu, X, BarChart2, AlertCircle, Lock, Eye, UserCheck,
   CheckCircle, XCircle, ChevronUp, ChevronDown, Search, Download,
   ChevronLeft, ChevronRight, RotateCcw, Layers,
+  Bot,
 } from "lucide-react";
 
 // ══════════════════════════════════════════════
@@ -227,6 +229,7 @@ const NAV_LINKS = [
   { label: "Incidents", href: "/incidents", icon: AlertTriangle },
   { label: "Configuration", href: "/configuration", icon: Settings },
   { label: "Audits", href: "/audits", icon: FileText },
+  { label: "Agents", href: "/agents", icon: Bot },
 ];
 
 function Navbar() {
@@ -304,6 +307,7 @@ function Navbar() {
               ADMIN
             </span>
           </div>
+          <NotificationBell />
           <a
             href="/logout"
             className="flex items-center gap-1.5 text-[10px] font-mono text-slate-600 hover:text-red-400 transition-colors"

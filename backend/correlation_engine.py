@@ -212,6 +212,13 @@ def _process_decision(decision: Dict):
         except Exception as e:
             print(f"[CORRELATION] Auto-block error: {e}")
 
+    # Dispatch notifications for Critical/High severity threats
+    try:
+        from notification_service import dispatch
+        dispatch(decision)
+    except Exception as e:
+        print(f"[CORRELATION] Notification dispatch error: {e}")
+
 
 def get_correlations(limit: int = 20) -> List[Dict]:
     return list(state.correlations)[:limit]
